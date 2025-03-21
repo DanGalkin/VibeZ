@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Isometric Multiplayer Game</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #000;
+    }
+    canvas {
+      display: block;
+    }
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+    #health {
+      background-color: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+    }
+    #join-game {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background-color: rgba(0, 0, 0, 0.7);
+      padding: 20px;
+      border-radius: 10px;
+      color: white;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      width: 80%;
+      max-width: 500px;
+    }
+    button {
+      background-color: #4CAF50;
+      border: none;
+      color: white;
+      padding: 10px 20px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 16px;
+      margin: 10px 2px;
+      cursor: pointer;
+      border-radius: 5px;
+    }
+    input {
+      padding: 10px;
+      width: 60%;
+      border-radius: 5px;
+      border: none;
+      margin-bottom: 10px;
+    }
+    .game-rooms {
+      max-height: 200px;
+      overflow-y: auto;
+      margin: 15px 0;
+      text-align: left;
+      padding: 10px;
+      background-color: rgba(255, 255, 255, 0.1);
+      border-radius: 5px;
+    }
+    .room-item {
+      padding: 8px;
+      border-bottom: 1px solid #555;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .room-item:hover {
+      background-color: rgba(255, 255, 255, 0.2);
+    }
+    .room-join-btn {
+      padding: 5px 10px;
+      font-size: 14px;
+      margin: 0;
+    }
+    .refresh-btn {
+      background-color: #2196F3;
+      padding: 5px 10px;
+      font-size: 14px;
+    }
+    .tabs {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 15px;
+    }
+    .tab {
+      padding: 8px 15px;
+      background-color: #333;
+      cursor: pointer;
+      border-radius: 5px 5px 0 0;
+      margin: 0 5px;
+    }
+    .tab.active {
+      background-color: #4CAF50;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div id="health">Health: 100</div>
+  </div>
+  
+  <div id="join-game">
+    <h2>Isometric Multiplayer Game</h2>
+    
+    <div class="tabs">
+      <div class="tab active" data-tab="create">Create Game</div>
+      <div class="tab" data-tab="join">Join Game</div>
+      <div class="tab" data-tab="browse">Browse Games</div>
+    </div>
+    
+    <div class="tab-content active" id="create-tab">
+      <input type="text" id="game-name" placeholder="Enter Game Name (optional)">
+      <button id="create-game">Create New Game</button>
+    </div>
+    
+    <div class="tab-content" id="join-tab">
+      <input type="text" id="room-id" placeholder="Enter Room ID">
+      <button id="join-room">Join Game</button>
+    </div>
+    
+    <div class="tab-content" id="browse-tab">
+      <div class="game-rooms" id="available-rooms">
+        <p>Loading available games...</p>
+      </div>
+      <button class="refresh-btn" id="refresh-rooms">Refresh List</button>
+    </div>
+  </div>
+
+  <!-- Socket.IO client -->
+  <script src="/socket.io/socket.io.js"></script>
+  
+  <!-- Three.js library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  
+  <!-- Main game script -->
+  <script src="game.js"></script>
+</body>
+</html>
