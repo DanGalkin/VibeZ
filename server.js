@@ -4,6 +4,9 @@ const { Server } = require('socket.io');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
+// Import the map generation module
+const { generateMap, MAP_ELEMENT_TYPES } = require('./generateMap');
+
 // Initialize Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
@@ -36,129 +39,142 @@ const gameState = {
 // Rooms/lobbies for multiple game instances
 const rooms = {};
 
-// Map element types
-const MAP_ELEMENT_TYPES = {
-  BUILDING: 'building',
-  ROAD: 'road',
-  WALL: 'wall',
-  TREE: 'tree'
-};
-
-// Generate a map for a new room
-function generateMap(mapSize = 100) {
-  const map = {
-    size: mapSize,
-    buildings: [],
-    roads: [],
-    walls: [],
-    trees: []
-  };
-
-  // Generate buildings
-  const buildingCount = Math.floor(Math.random() * 5) + 3;
-  for (let i = 0; i < buildingCount; i++) {
-    const width = Math.floor(Math.random() * 10) + 5;
-    const height = Math.floor(Math.random() * 10) + 5;
-    const depth = Math.floor(Math.random() * 10) + 5;
-    let x, z;
-    do {
-      x = Math.random() * (mapSize - width) - mapSize / 2 + width / 2;
-      z = Math.random() * (mapSize - depth) - mapSize / 2 + depth / 2;
-    } while (Math.abs(x) < 15 && Math.abs(z) < 15);
-    map.buildings.push({
-      id: `building-${i}`,
-      type: MAP_ELEMENT_TYPES.BUILDING,
-      position: { x, y: height / 2, z },
-      dimensions: { width, height, depth },
-      color: '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')
-    });
-  }
-
-  // Generate roads
-  map.roads.push({
-    id: 'road-x',
-    type: MAP_ELEMENT_TYPES.ROAD,
-    points: [
-      { x: -mapSize / 2, y: 0.1, z: 0 },
-      { x: mapSize / 2, y: 0.1, z: 0 }
-    ],
-    width: 5
-  });
-  map.roads.push({
-    id: 'road-z',
-    type: MAP_ELEMENT_TYPES.ROAD,
-    points: [
-      { x: 0, y: 0.1, z: -mapSize / 2 },
-      { x: 0, y: 0.1, z: mapSize / 2 }
-    ],
-    width: 5
-  });
-
-  // Generate walls
-  const wallCount = Math.floor(Math.random() * 8) + 4;
-  for (let i = 0; i < wallCount; i++) {
-    const length = Math.floor(Math.random() * 15) + 5;
-    const height = Math.floor(Math.random() * 3) + 1;
-    const x = Math.random() * mapSize - mapSize / 2;
-    const z = Math.random() * mapSize - mapSize / 2;
-    const rotation = Math.floor(Math.random() * 4) * Math.PI / 2;
-    map.walls.push({
-      id: `wall-${i}`,
-      type: MAP_ELEMENT_TYPES.WALL,
-      position: { x, y: height / 2, z },
-      dimensions: { length, height, width: 1 },
-      rotation
-    });
-  }
-
-  // Generate trees
-  const treeCount = Math.floor(Math.random() * 15) + 10;
-  for (let i = 0; i < treeCount; i++) {
-    const height = Math.floor(Math.random() * 4) + 3;
-    const radius = Math.random() + 0.5;
-    let x, z;
-    do {
-      x = Math.random() * mapSize - mapSize / 2;
-      z = Math.random() * mapSize - mapSize / 2;
-    } while (Math.abs(x) < 10 && Math.abs(z) < 10);
-    map.trees.push({
-      id: `tree-${i}`,
-      type: MAP_ELEMENT_TYPES.TREE,
-      position: { x, y: height / 2, z },
-      dimensions: { height, radius }
-    });
-  }
-
-  return map;
-}
-
-// Check collision between player and map elements
-function checkMapCollisions(player, map) {
+// Check collision between player and map elements with improved detection
+function checkMapCollisions(player, map, movement) {
+  const playerRadius = 0.5; // Player collision radius
+  
+  // Store collision data to calculate proper response
+  let collision = false;
+  let nearestIntersection = null;
+  let minDistance = Infinity;
+  
+  // Check collisions with buildings
   for (const building of map.buildings) {
     const halfWidth = building.dimensions.width / 2;
     const halfDepth = building.dimensions.depth / 2;
-    if (player.position.x > building.position.x - halfWidth &&
-        player.position.x < building.position.x + halfWidth &&
-        player.position.z > building.position.z - halfDepth &&
-        player.position.z < building.position.z + halfDepth) {
-      return true;
+    
+    // Calculate the closest point on the building box to the player
+    const closestX = Math.max(building.position.x - halfWidth, 
+                     Math.min(player.position.x, building.position.x + halfWidth));
+    const closestZ = Math.max(building.position.z - halfDepth, 
+                     Math.min(player.position.z, building.position.z + halfDepth));
+    
+    // Calculate distance from closest point to player
+    const dx = player.position.x - closestX;
+    const dz = player.position.z - closestZ;
+    const distanceSquared = dx * dx + dz * dz;
+    
+    if (distanceSquared < playerRadius * playerRadius) {
+      collision = true;
+      
+      // Record this collision if it's closer than previous ones
+      if (distanceSquared < minDistance) {
+        minDistance = distanceSquared;
+        nearestIntersection = { x: closestX, z: closestZ };
+      }
     }
   }
+  
+  // Check collisions with trees
+  for (const tree of map.trees) {
+    const dx = player.position.x - tree.position.x;
+    const dz = player.position.z - tree.position.z;
+    const distanceSquared = dx * dx + dz * dz;
+    const combinedRadius = playerRadius + tree.dimensions.radius * 0.5;
+    
+    if (distanceSquared < combinedRadius * combinedRadius) {
+      collision = true;
+      
+      if (distanceSquared < minDistance) {
+        minDistance = distanceSquared;
+        nearestIntersection = { x: tree.position.x, z: tree.position.z };
+      }
+    }
+  }
+  
+  // Check collisions with walls and benches
   for (const wall of map.walls) {
-    const halfLength = wall.dimensions.length / 2;
-    const halfWidth = wall.dimensions.width / 2;
-    const relX = player.position.x - wall.position.x;
-    const relZ = player.position.z - wall.position.z;
-    const cosA = Math.cos(-wall.rotation);
-    const sinA = Math.sin(-wall.rotation);
-    const rotX = relX * cosA - relZ * sinA;
-    const rotZ = relX * sinA + relZ * cosA;
-    if (rotX > -halfLength && rotX < halfLength &&
-        rotZ > -halfWidth && rotZ < halfWidth) {
-      return true;
+    // Handle regular walls
+    if (wall.type !== 'bench') {
+      const halfLength = wall.dimensions.length / 2;
+      const halfWidth = wall.dimensions.width / 2;
+      const relX = player.position.x - wall.position.x;
+      const relZ = player.position.z - wall.position.z;
+      const cosA = Math.cos(-wall.rotation);
+      const sinA = Math.sin(-wall.rotation);
+      const rotX = relX * cosA - relZ * sinA;
+      const rotZ = relX * sinA + relZ * cosA;
+      
+      // Calculate the closest point on the wall to the player
+      const closestX = Math.max(-halfLength, Math.min(rotX, halfLength));
+      const closestZ = Math.max(-halfWidth, Math.min(rotZ, halfWidth));
+      
+      // Transform closest point back to world space
+      const worldClosestX = closestX * cosA + closestZ * sinA + wall.position.x;
+      const worldClosestZ = -closestX * sinA + closestZ * cosA + wall.position.z;
+      
+      const dx = player.position.x - worldClosestX;
+      const dz = player.position.z - worldClosestZ;
+      const distanceSquared = dx * dx + dz * dz;
+      
+      if (distanceSquared < playerRadius * playerRadius) {
+        collision = true;
+        
+        if (distanceSquared < minDistance) {
+          minDistance = distanceSquared;
+          nearestIntersection = { x: worldClosestX, z: worldClosestZ };
+        }
+      }
+    }
+    // Handle benches with a simple circle collider
+    else {
+      const dx = player.position.x - wall.position.x;
+      const dz = player.position.z - wall.position.z;
+      const distanceSquared = dx * dx + dz * dz;
+      const benchRadius = Math.max(wall.dimensions.length, wall.dimensions.width) / 2;
+      
+      if (distanceSquared < (playerRadius + benchRadius) * (playerRadius + benchRadius)) {
+        collision = true;
+        
+        if (distanceSquared < minDistance) {
+          minDistance = distanceSquared;
+          nearestIntersection = { x: wall.position.x, z: wall.position.z };
+        }
+      }
     }
   }
-  return false;
+  
+  // If we have a collision, calculate collision response
+  if (collision && nearestIntersection) {
+    // Calculate push-out vector
+    const dx = player.position.x - nearestIntersection.x;
+    const dz = player.position.z - nearestIntersection.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+    
+    if (distance > 0) {
+      // Normalize the direction
+      const nx = dx / distance;
+      const nz = dz / distance;
+      
+      // Calculate how much to push the player out
+      const pushDistance = playerRadius - distance;
+      
+      if (pushDistance > 0) {
+        // Return position with collision adjustment
+        return { 
+          collision: true, 
+          position: {
+            x: player.position.x + nx * pushDistance,
+            y: player.position.y,
+            z: player.position.z + nz * pushDistance
+          }
+        };
+      }
+    }
+  }
+  
+  // No collision or no adjustment needed
+  return { collision: collision, position: player.position };
 }
 
 // Socket.IO connection handling
@@ -175,7 +191,7 @@ io.on('connection', (socket) => {
         projectiles: [],
         enemies: [],
         roomName: roomName || `Game ${roomId.substring(0, 6)}`,
-        map: generateMap()
+        map: generateMap() // Using imported map generation function
       };
     } else if (!rooms[roomId]) {
       // Room doesn't exist anymore
@@ -219,18 +235,30 @@ io.on('connection', (socket) => {
     const room = rooms[socket.roomId];
     const player = room.players[socket.id];
     const prevPosition = { ...player.position };
+    
+    // Update position temporarily for collision check
     player.position = movement.position;
-    if (checkMapCollisions(player, room.map)) {
-      player.position = prevPosition;
-      socket.emit('playerCollision', { position: prevPosition });
-    } else {
-      player.rotation = movement.rotation;
-      socket.to(socket.roomId).emit('playerMoved', {
-        id: socket.id,
-        position: player.position,
-        rotation: player.rotation
-      });
+    
+    // Check collisions with improved function
+    const collisionResult = checkMapCollisions(player, room.map, movement);
+    
+    if (collisionResult.collision) {
+      // Collision detected, use corrected position from collision response
+      player.position = collisionResult.position;
+      
+      // Tell client about corrected position
+      socket.emit('playerCollision', { position: player.position });
     }
+    
+    // Update player rotation
+    player.rotation = movement.rotation;
+    
+    // Broadcast movement to other players
+    socket.to(socket.roomId).emit('playerMoved', {
+      id: socket.id,
+      position: player.position,
+      rotation: player.rotation
+    });
   });
   
   // Handle shooting

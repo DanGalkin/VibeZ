@@ -1,3 +1,6 @@
+// Import map creation functions
+import { createMapElements } from './map.js';
+
 // Connect to Socket.IO server
 const socket = io();
 
@@ -7,6 +10,7 @@ let players = {};
 let projectiles = {};
 let localPlayer = null;
 let roomId = null;
+let mapContainer = null;
 
 // Movement controls
 const keys = {
@@ -295,9 +299,19 @@ function updateMovement() {
   if (moveDirection.length() > 0) {
     moveDirection.normalize();
     
-    // Update local player position
-    localPlayer.position.x += moveDirection.x * PLAYER_SPEED;
-    localPlayer.position.z += moveDirection.z * PLAYER_SPEED;
+    // Store previous position before moving (for client-side prediction)
+    const prevPosition = {
+      x: localPlayer.position.x,
+      z: localPlayer.position.z
+    };
+    
+    // Update local player position - temporary for client-side prediction
+    const newX = prevPosition.x + moveDirection.x * PLAYER_SPEED;
+    const newZ = prevPosition.z + moveDirection.z * PLAYER_SPEED;
+    
+    // Update position using smooth movement
+    localPlayer.position.x = newX;
+    localPlayer.position.z = newZ;
     
     // Calculate rotation based on movement direction
     const angle = Math.atan2(moveDirection.x, moveDirection.z);
@@ -306,11 +320,15 @@ function updateMovement() {
     // Tell server about movement
     socket.emit('playerMove', {
       position: {
-        x: localPlayer.position.x - PLAYER_SIZE / 2,
+        x: localPlayer.position.x,
         y: 0, // Ground level
-        z: localPlayer.position.z - PLAYER_SIZE / 2
+        z: localPlayer.position.z
       },
-      rotation: angle
+      rotation: angle,
+      moveDirection: {
+        x: moveDirection.x,
+        z: moveDirection.z
+      }
     });
   }
 }
@@ -464,358 +482,21 @@ function setupUI() {
   return { updateHealth };
 }
 
-// Generate a city-style road network
-function generateCityRoads(mapSize) {
-  const roadGroup = new THREE.Group();
-  
-  // Road configuration
-  const roadWidth = 8;  // All roads 8 units wide
-  const roadSpacing = 24; // At least 24 units between intersections
-  
-  // Road surface material (asphalt)
-  const roadMaterial = new THREE.MeshStandardMaterial({
-    color: 0x333333,  // Dark gray
-    roughness: 0.8,
-    metalness: 0.1
-  });
-  
-  // Road marking material (white lines)
-  const markingMaterial = new THREE.MeshStandardMaterial({
-    color: 0xFFFFFF,
-    roughness: 0.4,
-    metalness: 0.1,
-    emissive: 0xFFFFFF,
-    emissiveIntensity: 0.2
-  });
-  
-  // Generate grid of roads
-  for (let z = -mapSize / 2 + roadSpacing; z < mapSize / 2; z += roadSpacing) {
-    createRoadWithDashedLines(-mapSize / 2, z, mapSize / 2, z, roadWidth, roadMaterial, markingMaterial, roadGroup);
-  }
-  
-  for (let x = -mapSize / 2 + roadSpacing; x < mapSize / 2; x += roadSpacing) {
-    createRoadWithDashedLines(x, -mapSize / 2, x, mapSize / 2, roadWidth, roadMaterial, markingMaterial, roadGroup);
-  }
-  
-  return roadGroup;
-}
-
-// Create a road with dashed line markings
-function createRoadWithDashedLines(x1, z1, x2, z2, width, roadMaterial, markingMaterial, parentGroup) {
-  const dx = x2 - x1;
-  const dz = z2 - z1;
-  const length = Math.sqrt(dx * dx + dz * dz);
-  const angle = Math.atan2(dx, dz);
-  
-  // Create road surface
-  const roadGeometry = new THREE.PlaneGeometry(width, length);
-  const roadMesh = new THREE.Mesh(roadGeometry, roadMaterial);
-  roadMesh.rotation.x = -Math.PI / 2;
-  roadMesh.rotation.z = angle;
-  roadMesh.position.set((x1 + x2) / 2, 0.01, (z1 + z2) / 2);
-  roadMesh.receiveShadow = true;
-  parentGroup.add(roadMesh);
-  
-  // Create dashed center line
-  createDashedLine((x1 + x2) / 2, (z1 + z2) / 2, length, angle, 2, 2, 0.3, markingMaterial, parentGroup);
-}
-
-// Create a dashed line
-function createDashedLine(x, z, length, angle, dashLength, gapLength, width, material, parentGroup) {
-  const totalLength = dashLength + gapLength;
-  const numDashes = Math.floor(length / totalLength);
-  
-  for (let i = 0; i < numDashes; i++) {
-    // Create a dash
-    const dashGeometry = new THREE.PlaneGeometry(width, dashLength);
-    const dashMesh = new THREE.Mesh(dashGeometry, material);
-    
-    // Position along the line
-    const offset = -length / 2 + totalLength * i + dashLength / 2;
-    const dashX = x + Math.sin(angle) * offset;
-    const dashZ = z + Math.cos(angle) * offset;
-    
-    dashMesh.position.set(dashX, 0.02, dashZ); // Slightly above road surface
-    dashMesh.rotation.x = -Math.PI / 2;
-    dashMesh.rotation.z = angle;
-    
-    parentGroup.add(dashMesh);
-  }
-}
-
-// Create map elements
-function createMapElements(map) {
-  const mapContainer = new THREE.Group();
-  scene.add(mapContainer);
-
-  // Generate roads first
-  const roadNetwork = generateCityRoads(map.size || 100);
-  mapContainer.add(roadNetwork);
-
-  // Get road positions for collision detection
-  const roadPositions = [];
-  for (let z = -map.size / 2 + 24; z < map.size / 2; z += 24) {
-    for (let x = -map.size / 2; x <= map.size / 2; x++) {
-      roadPositions.push({ x, z, width: 8 });
-    }
-  }
-  for (let x = -map.size / 2 + 24; x < map.size / 2; x += 24) {
-    for (let z = -map.size / 2; z <= map.size / 2; z++) {
-      roadPositions.push({ x, z, width: 8 });
-    }
-  }
-
-  // Generate custom buildings
-  const buildingCount = 20;
-  const buildingColors = [0x999999, 0xE6B800, 0xFFC0CB, 0x8B4513]; // grey, yellow, pink, brown
-  const buildingProps = [];
-
-  for (let i = 0; i < buildingCount; i++) {
-    // Generate random properties
-    const colorIndex = Math.floor(Math.random() * buildingColors.length);
-    const floors = Math.floor(Math.random() * 2) + 1;
-    const hasPitchedRoof = Math.random() > 0.5;
-    const width = Math.floor(Math.random() * 9) + 8; // 8-16
-    const depth = Math.floor(Math.random() * 9) + 8; // 8-16
-    const height = floors * 3 + (hasPitchedRoof ? 2 : 0);
-    
-    // Find a position that doesn't overlap with roads
-    let x, z, isValidPosition;
-    let attempts = 0;
-    
-    do {
-      attempts++;
-      isValidPosition = true;
-      x = Math.random() * (map.size - width) - map.size/2 + width/2;
-      z = Math.random() * (map.size - depth) - map.size/2 + depth/2;
-      
-      // Check if position overlaps with road
-      for (const road of roadPositions) {
-        const roadMinX = road.x - road.width/2;
-        const roadMaxX = road.x + road.width/2;
-        const roadMinZ = road.z - road.width/2;
-        const roadMaxZ = road.z + road.width/2;
-        
-        const buildingMinX = x - width/2;
-        const buildingMaxX = x + width/2;
-        const buildingMinZ = z - depth/2;
-        const buildingMaxZ = z + depth/2;
-        
-        // Detect collision with a road + buffer zone
-        const buffer = 1; // Buffer zone around roads
-        if (
-          buildingMaxX + buffer > roadMinX && 
-          buildingMinX - buffer < roadMaxX && 
-          buildingMaxZ + buffer > roadMinZ && 
-          buildingMinZ - buffer < roadMaxZ
-        ) {
-          isValidPosition = false;
-          break;
-        }
-      }
-      
-      // Also check collision with other buildings
-      if (isValidPosition) {
-        for (const building of buildingProps) {
-          const dist = Math.sqrt(
-            Math.pow(x - building.position.x, 2) + 
-            Math.pow(z - building.position.z, 2)
-          );
-          if (dist < (width + building.width) / 2) {
-            isValidPosition = false;
-            break;
-          }
-        }
-      }
-    } while (!isValidPosition && attempts < 100);
-    
-    // If we can't find a valid position after 100 attempts, skip this building
-    if (!isValidPosition) continue;
-    
-    buildingProps.push({
-      position: { x, y: height/2, z },
-      width,
-      depth,
-      height,
-      color: buildingColors[colorIndex],
-      floors,
-      hasPitchedRoof
-    });
-  }
-
-  // Create building meshes
-  buildingProps.forEach(building => {
-    const buildingGroup = new THREE.Group();
-    
-    // Create main building structure
-    const buildingGeometry = new THREE.BoxGeometry(
-      building.width,
-      building.height - (building.hasPitchedRoof ? 2 : 0),
-      building.depth
-    );
-    const buildingMaterial = new THREE.MeshStandardMaterial({
-      color: building.color,
-      roughness: 0.7
-    });
-    const buildingMesh = new THREE.Mesh(buildingGeometry, buildingMaterial);
-    buildingMesh.castShadow = true;
-    buildingMesh.receiveShadow = true;
-    
-    // If pitched roof, add a roof that covers the entire building
-    if (building.hasPitchedRoof) {
-      // Use custom geometry for pitched roof to ensure it covers the whole building
-      const roofHeight = 2;
-      const halfWidth = building.width / 2;
-      const halfDepth = building.depth / 2;
-      
-      const roofGeometry = new THREE.BufferGeometry();
-      
-      // Define vertices for a pyramid
-      const vertices = new Float32Array([
-        // Base (4 corners)
-        -halfWidth, 0, -halfDepth,
-        halfWidth, 0, -halfDepth,
-        halfWidth, 0, halfDepth,
-        -halfWidth, 0, halfDepth,
-        // Top point
-        0, roofHeight, 0
-      ]);
-      
-      // Define faces (triangles)
-      const indices = [
-        // Four triangular faces
-        0, 1, 4, // front
-        1, 2, 4, // right
-        2, 3, 4, // back
-        3, 0, 4, // left
-      ];
-      
-      roofGeometry.setIndex(indices);
-      roofGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-      roofGeometry.computeVertexNormals();
-      
-      const roofMaterial = new THREE.MeshStandardMaterial({
-        color: 0x880000, // Dark red roof
-        roughness: 0.6
-      });
-      
-      const roof = new THREE.Mesh(roofGeometry, roofMaterial);
-      roof.position.y = building.height / 2 - 1; // Position at top of building
-      roof.castShadow = true;
-      buildingGroup.add(roof);
-    }
-    
-    // Add windows - ensure they're at proper height
-    const windowMaterial = new THREE.MeshStandardMaterial({
-      color: 0x87CEEB, // Sky blue
-      emissive: 0x3366FF,
-      emissiveIntensity: 0.2,
-      transparent: true,
-      opacity: 0.8
-    });
-    
-    // Add windows to each floor, making sure they're above ground
-    const buildingBottom = -building.height / 2;
-    for (let floor = 0; floor < building.floors; floor++) {
-      const windowHeight = 1.5; // Height of window
-      const floorHeight = 3; // Height between floors
-      const windowY = buildingBottom + (floor * floorHeight) + floorHeight/2; // Center window vertically on the floor
-      
-      // Make sure window is above ground
-      if (windowY - windowHeight/2 < -building.height/2) continue;
-      
-      // Front windows
-      for (let i = 0; i < building.width - 2; i += 2) {
-        const windowGeometry = new THREE.PlaneGeometry(1, windowHeight);
-        const window1 = new THREE.Mesh(windowGeometry, windowMaterial);
-        window1.position.set(i - building.width/2 + 1.5, windowY, building.depth/2 + 0.01);
-        buildingGroup.add(window1);
-      }
-      
-      // Back windows
-      for (let i = 0; i < building.width - 2; i += 2) {
-        const windowGeometry = new THREE.PlaneGeometry(1, windowHeight);
-        const window2 = new THREE.Mesh(windowGeometry, windowMaterial);
-        window2.position.set(i - building.width/2 + 1.5, windowY, -building.depth/2 - 0.01);
-        window2.rotation.y = Math.PI;
-        buildingGroup.add(window2);
-      }
-      
-      // Side windows
-      for (let i = 0; i < building.depth - 2; i += 2) {
-        const windowGeometry = new THREE.PlaneGeometry(1, windowHeight);
-        
-        const window3 = new THREE.Mesh(windowGeometry, windowMaterial);
-        window3.position.set(building.width/2 + 0.01, windowY, i - building.depth/2 + 1.5);
-        window3.rotation.y = Math.PI / 2;
-        buildingGroup.add(window3);
-        
-        const window4 = new THREE.Mesh(windowGeometry, windowMaterial);
-        window4.position.set(-building.width/2 - 0.01, windowY, i - building.depth/2 + 1.5);
-        window4.rotation.y = -Math.PI / 2;
-        buildingGroup.add(window4);
-      }
-    }
-    
-    // Add the building to the group
-    buildingGroup.add(buildingMesh);
-    buildingGroup.position.set(building.position.x, building.position.y, building.position.z);
-    mapContainer.add(buildingGroup);
-  });
-
-  map.walls.forEach(wall => {
-    const geometry = new THREE.BoxGeometry(
-      wall.dimensions.length,
-      wall.dimensions.height,
-      wall.dimensions.width
-    );
-    const material = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(wall.position.x, wall.position.y, wall.position.z);
-    mesh.rotation.y = wall.rotation;
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mapContainer.add(mesh);
-  });
-
-  map.trees.forEach(tree => {
-    const treeGroup = new THREE.Group();
-    const trunkGeometry = new THREE.CylinderGeometry(
-      tree.dimensions.radius * 0.3,
-      tree.dimensions.radius * 0.5,
-      tree.dimensions.height * 0.5,
-      8
-    );
-    const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.9 });
-    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
-    trunk.position.y = tree.dimensions.height * 0.25;
-    trunk.castShadow = true;
-    treeGroup.add(trunk);
-
-    const foliageGeometry = new THREE.ConeGeometry(
-      tree.dimensions.radius,
-      tree.dimensions.height * 0.7,
-      8
-    );
-    const foliageMaterial = new THREE.MeshStandardMaterial({ color: 0x2E8B57, roughness: 0.8 });
-    const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
-    foliage.position.y = tree.dimensions.height * 0.6;
-    foliage.castShadow = true;
-    treeGroup.add(foliage);
-
-    treeGroup.position.set(tree.position.x, 0, tree.position.z);
-    mapContainer.add(treeGroup);
-  });
-
-  return mapContainer;
-}
-
 // Set up Socket.IO event handlers
 function setupSocketEvents(ui) {
   // Initial game state from server
   socket.on('gameState', (state) => {
     roomId = socket.roomId;
-    if (state.map) createMapElements(state.map);
+    
+    // Create map elements using the imported function
+    if (state.map) {
+      if (mapContainer) {
+        scene.remove(mapContainer); // Remove existing map if any
+      }
+      mapContainer = createMapElements(state.map);
+      scene.add(mapContainer);
+    }
+    
     console.log('Joined room:', roomId);
     
     // Create meshes for all existing players
@@ -948,7 +629,12 @@ function setupSocketEvents(ui) {
 
   socket.on('playerCollision', (data) => {
     if (localPlayer) {
-      localPlayer.position.set(data.position.x, localPlayer.position.y, data.position.z);
+      // Update position based on server's collision response
+      localPlayer.position.x = data.position.x;
+      localPlayer.position.z = data.position.z;
+      
+      // Remove the collision visual indicator
+      // No color change on collision anymore
     }
   });
 }
