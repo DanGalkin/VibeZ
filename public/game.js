@@ -8,9 +8,14 @@ const socket = io();
 let scene, camera, renderer;
 let players = {};
 let projectiles = {};
+let zombies = {}; // Add zombies object
 let localPlayer = null;
 let roomId = null;
 let mapContainer = null;
+let mapBoundaries = null; // Add reference to map boundaries visualization
+
+// Constants
+const MAP_SIZE = 50; // Should match server-side MAP_SIZE
 
 // Movement controls
 const keys = {
@@ -28,6 +33,10 @@ const PLAYER_HEIGHT = 1.8;
 // Game state
 let gameActive = false;
 let playerHealth = 100;
+
+// Add new global variable for mouse position
+let mousePosition = new THREE.Vector2();
+let groundMousePosition = new THREE.Vector3();
 
 // Initialize Three.js scene
 function initThree() {
@@ -71,7 +80,7 @@ function initThree() {
   scene.add(directionalLight);
   
   // Create ground plane
-  const groundGeometry = new THREE.PlaneGeometry(100, 100);
+  const groundGeometry = new THREE.PlaneGeometry(MAP_SIZE * 2, MAP_SIZE * 2);
   const groundMaterial = new THREE.MeshStandardMaterial({ 
     color: 0x3a9d23,  // Green
     roughness: 0.8,
@@ -82,10 +91,13 @@ function initThree() {
   ground.receiveShadow = true;
   scene.add(ground);
   
-  // Add a grid for reference
-  const gridHelper = new THREE.GridHelper(100, 100, 0x000000, 0x000000);
+  // Add a grid for reference (limited to the map size)
+  const gridHelper = new THREE.GridHelper(MAP_SIZE * 2, 100, 0x000000, 0x000000);
   gridHelper.position.y = 0.01; // Just above the ground
   scene.add(gridHelper);
+  
+  // Add map boundary visualization
+  createMapBoundaries();
   
   // Add fog of war (simple distance-based fog)
   scene.fog = new THREE.FogExp2(0x87ceeb, 0.02);
@@ -99,6 +111,45 @@ function initThree() {
   
   // Add event listeners for controls
   setupControls();
+}
+
+// Create visual boundary markers for the map
+function createMapBoundaries() {
+  const boundaryGroup = new THREE.Group();
+  
+  // Create a wireframe box that represents the boundaries
+  const geometry = new THREE.BoxGeometry(MAP_SIZE * 2, 10, MAP_SIZE * 2);
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xff0000,
+    wireframe: true,
+    transparent: true,
+    opacity: 0.3
+  });
+  
+  const boundaryBox = new THREE.Mesh(geometry, material);
+  boundaryBox.position.y = 5; // Half the height
+  boundaryGroup.add(boundaryBox);
+  
+  // Add corner posts for added visibility
+  const postGeometry = new THREE.BoxGeometry(1, 10, 1);
+  const postMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+  
+  // Create 4 corner posts
+  const cornerPositions = [
+    [MAP_SIZE, 0, MAP_SIZE],
+    [MAP_SIZE, 0, -MAP_SIZE],
+    [-MAP_SIZE, 0, MAP_SIZE],
+    [-MAP_SIZE, 0, -MAP_SIZE]
+  ];
+  
+  cornerPositions.forEach(pos => {
+    const post = new THREE.Mesh(postGeometry, postMaterial);
+    post.position.set(pos[0], 5, pos[2]);
+    boundaryGroup.add(post);
+  });
+  
+  scene.add(boundaryGroup);
+  mapBoundaries = boundaryGroup;
 }
 
 // Set up keyboard and mouse controls
@@ -146,28 +197,31 @@ function setupControls() {
     }
   });
   
+  // Track mouse movement for sight controller
+  document.addEventListener('mousemove', (event) => {
+    // Update the mouse position
+    mousePosition.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mousePosition.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    
+    // Calculate intersection with ground
+    updateGroundMousePosition();
+    
+    // Update player sight direction if the player exists
+    if (localPlayer && gameActive) {
+      updatePlayerSight();
+    }
+  });
+  
   // Mouse click for shooting
   document.addEventListener('click', (event) => {
     if (!gameActive || !localPlayer) return;
     
-    // Calculate direction from camera to click point
-    const mouse = new THREE.Vector2(
-      (event.clientX / window.innerWidth) * 2 - 1,
-      -(event.clientY / window.innerHeight) * 2 + 1
-    );
-    
-    // Create a ray from the camera
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(mouse, camera);
-    
-    // Calculate the intersection with the ground plane
-    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-    const targetPoint = new THREE.Vector3();
-    raycaster.ray.intersectPlane(groundPlane, targetPoint);
+    // We already have the mouse position from mousemove events
+    // Use groundMousePosition for shooting direction
     
     // Calculate direction from player to target
     const direction = new THREE.Vector3()
-      .subVectors(targetPoint, localPlayer.position)
+      .subVectors(groundMousePosition, localPlayer.position)
       .normalize();
     
     // Emit shoot event to server
@@ -203,42 +257,286 @@ function setupControls() {
   });
 }
 
-// Create a player mesh
+// Calculate the intersection of mouse pointer with the ground plane
+function updateGroundMousePosition() {
+  if (!camera) return;
+  
+  // Create a ray from the camera
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(mousePosition, camera);
+  
+  // Calculate the intersection with the ground plane
+  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  raycaster.ray.intersectPlane(groundPlane, groundMousePosition);
+}
+
+// Update player sight direction based on mouse position
+function updatePlayerSight() {
+  if (!localPlayer || !groundMousePosition) return;
+  
+  // Calculate direction from player to mouse position
+  const dx = groundMousePosition.x - localPlayer.position.x;
+  const dz = groundMousePosition.z - localPlayer.position.z;
+  
+  // Calculate angle for player sight
+  const targetSightAngle = Math.atan2(dx, dz);
+  
+  // Get current rotation
+  const currentRotation = localPlayer.rotation.y;
+  
+  // Interpolate rotation at 2x slower speed (divide by 2)
+  const newRotation = interpolateAngle(currentRotation, targetSightAngle, 0.5);
+  
+  // Apply the interpolated rotation to the player body
+  localPlayer.rotation.y = newRotation;
+  
+  // Send sight direction to server
+  socket.emit('playerSight', {
+    angle: newRotation
+  });
+}
+
+// Helper function to interpolate between angles (considering the shortest path)
+function interpolateAngle(currentAngle, targetAngle, speed) {
+  // Normalize angles to range [-PI, PI] to find shortest path
+  let delta = ((targetAngle - currentAngle + Math.PI) % (Math.PI * 2)) - Math.PI;
+  if (delta < -Math.PI) delta += Math.PI * 2;
+  
+  // Apply interpolation with speed factor
+  return currentAngle + delta * speed;
+}
+
+// Create a player mesh styled like a Minecraft character
 function createPlayerMesh(player) {
-  // Create player body
-  const bodyGeometry = new THREE.BoxGeometry(PLAYER_SIZE, PLAYER_HEIGHT, PLAYER_SIZE);
+  // Create a group for the player
+  const playerGroup = new THREE.Group();
+  
+  // Define materials
+  const isLocalPlayer = player.id === socket.id;
   const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: player.id === socket.id ? 0x0000ff : 0xff0000
+    color: isLocalPlayer ? 0x3050CC : 0xCC3030, // Blue for local, red for others
+    roughness: 0.7
   });
-  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-  body.castShadow = true;
-  body.receiveShadow = true;
-  
-  // Create player head
-  const headGeometry = new THREE.SphereGeometry(PLAYER_SIZE / 2, 16, 16);
   const headMaterial = new THREE.MeshStandardMaterial({
-    color: player.id === socket.id ? 0x0088ff : 0xff8800
+    color: 0xFFCCA0, // Skin color
+    roughness: 0.5
   });
-  const head = new THREE.Mesh(headGeometry, headMaterial);
-  head.position.y = PLAYER_HEIGHT / 2 + 0.2;
-  head.castShadow = true;
+  const limbMaterial = new THREE.MeshStandardMaterial({
+    color: isLocalPlayer ? 0x3050CC : 0xCC3030, // Match body color
+    roughness: 0.7
+  });
   
-  // Create player group
-  const playerMesh = new THREE.Group();
-  playerMesh.add(body);
-  playerMesh.add(head);
+  // Body - slightly thinner than a cube
+  const bodyGeometry = new THREE.BoxGeometry(0.6, 0.8, 0.3);
+  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+  body.position.y = 0.9;
+  body.castShadow = true;
+  playerGroup.add(body);
+  
+  // Head - cube, slightly larger than body width
+  const headGeometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+  const head = new THREE.Mesh(headGeometry, headMaterial);
+  head.position.y = 1.7;
+  head.castShadow = true;
+  head.name = "head"; // For sight controller reference
+  
+  // Optional: Face details (can be enhanced with textures later)
+  const faceDetails = new THREE.Group();
+  
+  // Eyes
+  const eyeMaterial = new THREE.MeshBasicMaterial({color: 0x222222});
+  const leftEye = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMaterial);
+  leftEye.position.set(0.2, 0, 0.41);
+  faceDetails.add(leftEye);
+  
+  const rightEye = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMaterial);
+  rightEye.position.set(-0.2, 0, 0.41);
+  faceDetails.add(rightEye);
+  
+  // Mouth
+  const mouthMaterial = new THREE.MeshBasicMaterial({color: 0x333333});
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 0.1), mouthMaterial);
+  mouth.position.set(0, -0.2, 0.41);
+  faceDetails.add(mouth);
+  
+  head.add(faceDetails);
+  playerGroup.add(head);
+  
+  // Arms
+  const armGeometry = new THREE.BoxGeometry(0.25, 0.8, 0.25);
+  
+  // Right arm with pistol
+  const rightArm = new THREE.Mesh(armGeometry, limbMaterial);
+  rightArm.position.set(-0.425, 0.9, 0);
+  rightArm.castShadow = true;
+  rightArm.name = "rightArm"; // For animation reference
+  playerGroup.add(rightArm);
+  
+  // Left arm will hold the pistol
+  const leftArm = new THREE.Mesh(armGeometry, limbMaterial);
+  leftArm.position.set(0.425, 0.9, 0);
+  leftArm.castShadow = true;
+  leftArm.name = "leftArm"; // For animation reference
+  
+  // Create pistol
+  const pistolGroup = new THREE.Group();
+  
+  // Gun barrel
+  const barrelGeometry = new THREE.BoxGeometry(0.08, 0.08, 0.4);
+  const gunMaterial = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8, roughness: 0.2 });
+  const barrel = new THREE.Mesh(barrelGeometry, gunMaterial);
+  barrel.position.z = 0.25;
+  pistolGroup.add(barrel);
+  
+  // Gun handle/grip
+  const handleGeometry = new THREE.BoxGeometry(0.08, 0.2, 0.12);
+  const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x663300, roughness: 0.8 }); // Brown wooden grip
+  const handle = new THREE.Mesh(handleGeometry, handleMaterial);
+  handle.position.y = -0.12;
+  handle.position.z = 0.1;
+  pistolGroup.add(handle);
+  
+  // Gun trigger guard
+  const guardGeometry = new THREE.BoxGeometry(0.08, 0.05, 0.12);
+  const guard = new THREE.Mesh(guardGeometry, gunMaterial);
+  guard.position.y = -0.05;
+  guard.position.z = 0.1;
+  pistolGroup.add(guard);
+  
+  // Position pistol at the end of the arm
+  pistolGroup.position.set(0, -0.3, 0.2);
+  pistolGroup.rotation.x = Math.PI / 2; // Point forward
+  
+  // Add pistol to left arm
+  leftArm.add(pistolGroup);
+  playerGroup.add(leftArm);
+  
+  // Legs
+  const legGeometry = new THREE.BoxGeometry(0.25, 0.8, 0.25);
+  
+  // Left leg - directly attached to playerGroup (not to legsGroup)
+  const leftLeg = new THREE.Mesh(legGeometry, limbMaterial);
+  leftLeg.position.set(0.15, 0.4, 0);
+  leftLeg.castShadow = true;
+  leftLeg.name = "leftLeg"; // For animation reference
+  playerGroup.add(leftLeg);
+  
+  // Right leg - directly attached to playerGroup (not to legsGroup)
+  const rightLeg = new THREE.Mesh(legGeometry, limbMaterial);
+  rightLeg.position.set(-0.15, 0.4, 0);
+  rightLeg.castShadow = true;
+  rightLeg.name = "rightLeg"; // For animation reference
+  playerGroup.add(rightLeg);
   
   // Position the player
-  playerMesh.position.set(
+  playerGroup.position.set(
     player.position.x,
-    player.position.y + PLAYER_HEIGHT / 2,
+    player.position.y,
     player.position.z
   );
+
+  // Set initial rotation if provided
+  if (player.rotation !== undefined) {
+    playerGroup.rotation.y = player.rotation;
+  }
+  
+  // Store animation state
+  playerGroup.userData = {
+    animationTime: 0,
+    walking: player.moving === true, // Explicit check
+    walkSpeed: 8 // Animation speed
+  };
   
   // Add to scene
-  scene.add(playerMesh);
+  scene.add(playerGroup);
   
-  return playerMesh;
+  return playerGroup;
+}
+
+// Create a zombie mesh
+function createZombieMesh(zombie) {
+  // Create a group for the zombie
+  const zombieGroup = new THREE.Group();
+  
+  // Define materials - green for zombies
+  const bodyMaterial = new THREE.MeshStandardMaterial({
+    color: 0x2AB54B, // Zombie green
+    roughness: 0.8
+  });
+  const headMaterial = new THREE.MeshStandardMaterial({
+    color: 0x1A9639, // Slightly darker green for head
+    roughness: 0.7
+  });
+  
+  // Body - similar to player but slightly hunched
+  const bodyGeometry = new THREE.BoxGeometry(0.6, 0.8, 0.3);
+  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+  body.position.y = 0.9;
+  body.rotation.x = 0.2; // Slight hunch
+  body.castShadow = true;
+  zombieGroup.add(body);
+  
+  // Head - like player but with no face details
+  const headGeometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+  const head = new THREE.Mesh(headGeometry, headMaterial);
+  head.position.y = 1.7;
+  head.castShadow = true;
+  zombieGroup.add(head);
+  
+  // Arms - stretched outward
+  const armGeometry = new THREE.BoxGeometry(0.25, 0.8, 0.25);
+  
+  // Left arm - stretched out to the left
+  const leftArm = new THREE.Mesh(armGeometry, bodyMaterial);
+  leftArm.position.set(0.425, 0.9, 0);
+  leftArm.rotation.z = -Math.PI / 4; // Stretched outward
+  leftArm.castShadow = true;
+  zombieGroup.add(leftArm);
+  
+  // Right arm - stretched out to the right
+  const rightArm = new THREE.Mesh(armGeometry, bodyMaterial);
+  rightArm.position.set(-0.425, 0.9, 0);
+  rightArm.rotation.z = Math.PI / 4; // Stretched outward
+  rightArm.castShadow = true;
+  zombieGroup.add(rightArm);
+  
+  // Legs
+  const legGeometry = new THREE.BoxGeometry(0.25, 0.8, 0.25);
+  
+  // Left leg
+  const leftLeg = new THREE.Mesh(legGeometry, bodyMaterial);
+  leftLeg.position.set(0.15, 0.4, 0);
+  leftLeg.castShadow = true;
+  zombieGroup.add(leftLeg);
+  
+  // Right leg
+  const rightLeg = new THREE.Mesh(legGeometry, bodyMaterial);
+  rightLeg.position.set(-0.15, 0.4, 0);
+  rightLeg.castShadow = true;
+  zombieGroup.add(rightLeg);
+  
+  // Position the zombie
+  zombieGroup.position.set(
+    zombie.position.x,
+    zombie.position.y,
+    zombie.position.z
+  );
+  
+  // Set rotation
+  zombieGroup.rotation.y = zombie.rotation;
+  
+  // Store animation state
+  zombieGroup.userData = {
+    id: zombie.id,
+    animationTime: Math.random() * 100, // Random start phase
+    walkSpeed: 3 + Math.random() * 2, // Slightly randomized walk speed
+    state: zombie.state || 'idle'
+  };
+  
+  // Add to scene
+  scene.add(zombieGroup);
+  
+  return zombieGroup;
 }
 
 // Create a projectile mesh
@@ -273,7 +571,15 @@ function removeProjectile(projectileId) {
   }
 }
 
-// Update player movement
+// Remove zombie from scene
+function removeZombie(zombieId) {
+  if (zombies[zombieId]) {
+    scene.remove(zombies[zombieId].mesh);
+    delete zombies[zombieId];
+  }
+}
+
+// Update player movement with animation and boundary check
 function updateMovement() {
   if (!localPlayer || !gameActive) return;
   
@@ -295,8 +601,16 @@ function updateMovement() {
   if (keys.right) moveDirection.add(cameraRight);
   if (keys.left) moveDirection.sub(cameraRight);
   
+  // Determine if player is walking
+  const isWalking = moveDirection.length() > 0;
+  
+  // Update animation state
+  if (localPlayer.userData) {
+    localPlayer.userData.walking = isWalking;
+  }
+  
   // Normalize if moving diagonally
-  if (moveDirection.length() > 0) {
+  if (isWalking) {
     moveDirection.normalize();
     
     // Store previous position before moving (for client-side prediction)
@@ -313,23 +627,37 @@ function updateMovement() {
     localPlayer.position.x = newX;
     localPlayer.position.z = newZ;
     
-    // Calculate rotation based on movement direction
-    const angle = Math.atan2(moveDirection.x, moveDirection.z);
-    localPlayer.rotation.y = angle;
+    // Client-side boundary check (server will enforce this too)
+    if (Math.abs(localPlayer.position.x) > MAP_SIZE || Math.abs(localPlayer.position.z) > MAP_SIZE) {
+      localPlayer.position.x = Math.max(-MAP_SIZE, Math.min(MAP_SIZE, localPlayer.position.x));
+      localPlayer.position.z = Math.max(-MAP_SIZE, Math.min(MAP_SIZE, localPlayer.position.z));
+    }
     
-    // Tell server about movement
+    // Tell server about movement - using current body rotation from sight controller
     socket.emit('playerMove', {
       position: {
         x: localPlayer.position.x,
         y: 0, // Ground level
         z: localPlayer.position.z
       },
-      rotation: angle,
-      moveDirection: {
-        x: moveDirection.x,
-        z: moveDirection.z
-      }
+      rotation: localPlayer.rotation.y,
+      moving: true // Explicitly set moving flag to true
     });
+    
+  } else if (localPlayer.userData && localPlayer.userData.walking) {
+    // Tell server player stopped moving - using current rotation from sight controller
+    socket.emit('playerMove', {
+      position: {
+        x: localPlayer.position.x,
+        y: 0,
+        z: localPlayer.position.z
+      },
+      rotation: localPlayer.rotation.y,
+      moving: false // Explicitly set moving flag to false
+    });
+    
+    // Reset walking state
+    localPlayer.userData.walking = false;
   }
 }
 
@@ -357,12 +685,105 @@ function updateProjectiles() {
   }
 }
 
-// Animation loop
-function animate() {
+// Simple animation function for all players
+function animatePlayers(deltaTime) {
+  // Animate each player based on their walking state
+  for (const id in players) {
+    const player = players[id];
+    if (!player.mesh || !player.mesh.userData) continue;
+    
+    // Get walking state
+    const isWalking = player.mesh.userData.walking === true;
+    
+    // Find limbs
+    const leftArm = player.mesh.getObjectByName("leftArm");
+    const rightArm = player.mesh.getObjectByName("rightArm");
+    const leftLeg = player.mesh.getObjectByName("leftLeg");
+    const rightLeg = player.mesh.getObjectByName("rightLeg");
+    
+    if (!leftArm || !rightArm || !leftLeg || !rightLeg) continue;
+    
+    if (isWalking) {
+      // Update animation time
+      player.mesh.userData.animationTime += deltaTime * player.mesh.userData.walkSpeed;
+      
+      // Calculate swing angle
+      const swingAngle = Math.sin(player.mesh.userData.animationTime) * 0.5;
+      const reverseSwingAngle = -swingAngle;
+      
+      // Apply leg and arm animation
+      rightArm.rotation.x = swingAngle;
+      leftArm.rotation.x = reverseSwingAngle;
+      leftLeg.rotation.x = swingAngle;
+      rightLeg.rotation.x = reverseSwingAngle;
+    } else {
+      // Reset all rotations when not moving
+      player.mesh.userData.animationTime = 0;
+      rightArm.rotation.x = 0;
+      leftArm.rotation.x = 0;
+      leftLeg.rotation.x = 0;
+      rightLeg.rotation.x = 0;
+    }
+  }
+}
+
+// Animate zombies
+function animateZombies(deltaTime) {
+  for (const id in zombies) {
+    const zombie = zombies[id];
+    if (!zombie.mesh || !zombie.mesh.userData) continue;
+    
+    // Always animate zombies since they're always in motion
+    zombie.mesh.userData.animationTime += deltaTime * zombie.mesh.userData.walkSpeed;
+    
+    // Find limbs
+    const leftArm = zombie.mesh.children[2]; // leftArm
+    const rightArm = zombie.mesh.children[3]; // rightArm
+    const leftLeg = zombie.mesh.children[4]; // leftLeg
+    const rightLeg = zombie.mesh.children[5]; // rightLeg
+    
+    if (!leftArm || !rightArm || !leftLeg || !rightLeg) continue;
+    
+    // Zombie animation is more shuffling/staggered than player animation
+    const swingBase = Math.sin(zombie.mesh.userData.animationTime) * 0.25;
+    const shuffleOffset = Math.cos(zombie.mesh.userData.animationTime * 2.1) * 0.1;
+    
+    // Arms are kept in outstretched position, but with small movements
+    leftArm.rotation.z = -Math.PI / 4 + shuffleOffset;
+    rightArm.rotation.z = Math.PI / 4 - shuffleOffset;
+    
+    // Legs move in shuffling motion
+    leftLeg.rotation.x = swingBase;
+    rightLeg.rotation.x = -swingBase;
+  }
+}
+
+// Reset player limbs to default position
+function resetPlayerLimbs(playerMesh) {
+  const limbs = ["rightArm", "leftArm", "leftLeg", "rightLeg"];
+  limbs.forEach(limbName => {
+    const limb = playerMesh.getObjectByName(limbName);
+    if (limb) {
+      limb.rotation.x = 0;
+    }
+  });
+}
+
+// Animation loop with timing for animations
+let lastTime = 0;
+function animate(time) {
+  const deltaTime = (time - lastTime) / 1000; // Convert to seconds
+  lastTime = time;
+  
   requestAnimationFrame(animate);
+  
+  // Update ground mouse position on every frame
+  updateGroundMousePosition();
   
   updateMovement();
   updateProjectiles();
+  animatePlayers(deltaTime);
+  animateZombies(deltaTime); // Add zombie animation
   
   // Update camera to follow local player
   if (localPlayer && gameActive) {
@@ -371,6 +792,9 @@ function animate() {
     camera.position.y = localPlayer.position.y + 15;
     camera.position.z = localPlayer.position.z + 20;
     camera.lookAt(localPlayer.position);
+    
+    // Update player sight after camera moves
+    updatePlayerSight();
   }
   
   renderer.render(scene, camera);
@@ -513,6 +937,16 @@ function setupSocketEvents(ui) {
       }
     }
     
+    // Create meshes for all existing zombies
+    if (state.zombies) {
+      for (const zombie of state.zombies) {
+        zombies[zombie.id] = {
+          mesh: createZombieMesh(zombie),
+          data: zombie
+        };
+      }
+    }
+    
     // Create meshes for all existing projectiles
     for (const projectile of state.projectiles) {
       createProjectile(projectile);
@@ -524,8 +958,14 @@ function setupSocketEvents(ui) {
     console.log('Player joined:', player.id);
     players[player.id] = {
       mesh: createPlayerMesh(player),
-      data: player
+      data: {
+        ...player,
+        moving: false // Explicitly initialize as not moving
+      }
     };
+    
+    // Ensure the mesh userData has correct walking state
+    players[player.id].mesh.userData.walking = false;
   });
   
   // Player left
@@ -537,22 +977,45 @@ function setupSocketEvents(ui) {
     }
   });
   
-  // Player moved
+  // Player moved event handler - ensure proper animation state
   socket.on('playerMoved', (data) => {
     if (players[data.id]) {
-      // Update player position smoothly (could add interpolation for smoother movement)
+      // Update player position smoothly
       players[data.id].mesh.position.set(
         data.position.x,
-        PLAYER_HEIGHT / 2,
+        0, // At ground level
         data.position.z
       );
       
       // Update player rotation
       players[data.id].mesh.rotation.y = data.rotation;
       
-      // Update data
-      players[data.id].data.position = data.position;
-      players[data.id].data.rotation = data.rotation;
+      // CRITICAL FIX: Explicitly update the walking state with strict boolean check
+      const isMoving = data.moving === true;
+      
+      // Update both the mesh userData and player data
+      players[data.id].mesh.userData.walking = isMoving;
+      players[data.id].data.moving = isMoving;
+      
+      if (data.movingDirection !== undefined) {
+        players[data.id].data.movingDirection = data.movingDirection;
+      }
+      
+      // Log the state (for debugging)
+      console.log(`Player ${data.id} moving state: ${isMoving}`);
+    }
+  });
+  
+  // Player sight direction updated
+  socket.on('playerSightUpdated', (data) => {
+    if (players[data.id] && data.id !== socket.id) { // Skip for local player as we set it directly
+      const playerMesh = players[data.id].mesh;
+      
+      // Update entire player rotation
+      playerMesh.rotation.y = data.angle;
+      
+      // Store sight angle in player data
+      players[data.id].data.sightAngle = data.angle;
     }
   });
   
@@ -589,13 +1052,96 @@ function setupSocketEvents(ui) {
     }
   });
   
-  // Game state update from server
+  // New zombie created
+  socket.on('zombieCreated', (zombie) => {
+    zombies[zombie.id] = {
+      mesh: createZombieMesh(zombie),
+      data: zombie
+    };
+  });
+  
+  // Zombie destroyed
+  socket.on('zombieDestroyed', (zombieId) => {
+    removeZombie(zombieId);
+  });
+  
+  // Zombie updates
+  socket.on('zombiesUpdate', (updatedZombies) => {
+    for (const zombie of updatedZombies) {
+      if (zombies[zombie.id]) {
+        // Update position and rotation
+        zombies[zombie.id].mesh.position.set(
+          zombie.position.x,
+          zombie.position.y || 0,
+          zombie.position.z
+        );
+        zombies[zombie.id].mesh.rotation.y = zombie.rotation;
+        
+        // Update state
+        zombies[zombie.id].mesh.userData.state = zombie.state;
+        zombies[zombie.id].data = zombie;
+      } else {
+        // Create if doesn't exist
+        zombies[zombie.id] = {
+          mesh: createZombieMesh(zombie),
+          data: zombie
+        };
+      }
+    }
+  });
+  
+  // Zombie hit
+  socket.on('zombieHit', (data) => {
+    if (zombies[data.id]) {
+      // Flash zombie red
+      const bodyMaterial = zombies[data.id].mesh.children[0].material;
+      const originalColor = bodyMaterial.color.clone();
+      
+      bodyMaterial.color.set(0xff0000); // Red
+      setTimeout(() => {
+        bodyMaterial.color.copy(originalColor);
+      }, 100);
+    }
+  });
+  
+  // Update game state from server - fix animation bug for other players
   socket.on('gameStateUpdate', (state) => {
     // Update player positions based on server state
     for (const playerId in state.players) {
       if (playerId !== socket.id && players[playerId]) {
         const serverPlayer = state.players[playerId];
+        
+        // Only update the walking state if we have mesh and userData
+        if (players[playerId].mesh && players[playerId].mesh.userData) {
+          // Explicitly check for server's moving flag to be true
+          players[playerId].mesh.userData.walking = serverPlayer.moving === true;
+        }
+        
+        // Update the rest of the player data
         players[playerId].data = serverPlayer;
+      }
+    }
+    
+    // Update zombie positions if needed
+    if (state.zombies) {
+      for (const zombie of state.zombies) {
+        if (zombies[zombie.id]) {
+          // Update existing zombie's data
+          zombies[zombie.id].data = zombie;
+        } else {
+          // Create new zombie if it doesn't exist
+          zombies[zombie.id] = {
+            mesh: createZombieMesh(zombie),
+            data: zombie
+          };
+        }
+      }
+      
+      // Remove zombies that no longer exist
+      for (const zombieId in zombies) {
+        if (!state.zombies.some(z => z.id === zombieId)) {
+          removeZombie(zombieId);
+        }
       }
     }
     
@@ -633,8 +1179,20 @@ function setupSocketEvents(ui) {
       localPlayer.position.x = data.position.x;
       localPlayer.position.z = data.position.z;
       
-      // Remove the collision visual indicator
-      // No color change on collision anymore
+      // Visual feedback for boundary collision
+      if (Math.abs(data.position.x) >= MAP_SIZE - 0.1 || Math.abs(data.position.z) >= MAP_SIZE - 0.1) {
+        // Flash map boundaries
+        if (mapBoundaries) {
+          mapBoundaries.children.forEach(child => {
+            if (child.material) {
+              child.material.color.set(0xffff00); // Yellow flash
+              setTimeout(() => {
+                child.material.color.set(0xff0000); // Back to red
+              }, 200);
+            }
+          });
+        }
+      }
     }
   });
 }
@@ -644,7 +1202,7 @@ function init() {
   initThree();
   const ui = setupUI();
   setupSocketEvents(ui);
-  animate();
+  animate(0); // Start with time 0
 }
 
 // Start the game when page loads
