@@ -46,7 +46,7 @@ function initThree() {
   
   // Create flat orthographic camera isometric angle
   const aspect = window.innerWidth / window.innerHeight;
-  const frustumSize = 20;
+  const frustumSize = 15;
   camera = new THREE.OrthographicCamera(
     frustumSize * aspect / -2,   // left
     frustumSize * aspect / 2,    // right,
@@ -104,9 +104,25 @@ function initThree() {
   
   // Handle window resize
   window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    console.log('Window resized');
+    if (camera && renderer) {
+      // Update renderer size
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      
+      // Update orthographic camera parameters
+      const aspect = window.innerWidth / window.innerHeight;
+      const frustumSize = 15; // Same as in initialization
+      
+      camera.left = frustumSize * aspect / -2;
+      camera.right = frustumSize * aspect / 2;
+      camera.top = frustumSize / 2;
+      camera.bottom = frustumSize / -2;
+      
+      camera.updateProjectionMatrix();
+      console.log('Camera and renderer updated');
+    } else {
+      console.error('Camera or renderer is not initialized');
+    }
   });
   
   // Add event listeners for controls
