@@ -111,12 +111,13 @@ export function createZombieMesh(zombie) {
   // Set rotation
   zombieGroup.rotation.y = zombie.rotation;
   
-  // Store animation state
+  // Store animation state and zombie state
   zombieGroup.userData = {
     id: zombie.id,
     animationTime: Math.random() * 100, // Random start phase
     walkSpeed: 3 + Math.random() * 2, // Slightly randomized walk speed
-    state: zombie.state || 'idle'
+    state: zombie.state || 'idle',
+    isMoving: zombie.state === 'chasing' // Only animate when chasing
   };
   
   return zombieGroup;
@@ -128,8 +129,8 @@ export function animateZombies(zombies, deltaTime) {
     const zombie = zombies[id];
     if (!zombie.mesh || !zombie.mesh.userData) continue;
     
-    // Always animate zombies since they're always in motion
-    zombie.mesh.userData.animationTime += deltaTime * zombie.mesh.userData.walkSpeed;
+    // Update moving state based on zombie state
+    zombie.mesh.userData.isMoving = zombie.data.state === 'chasing';
     
     // Find limbs - different structure now with shoulder groups
     const leftShoulder = zombie.mesh.children[2]; // Left shoulder group
@@ -139,24 +140,53 @@ export function animateZombies(zombies, deltaTime) {
     
     if (!leftShoulder || !rightShoulder || !leftLeg || !rightLeg) continue;
     
-    // Zombie animation is more shuffling/staggered than player animation
-    const swingBase = Math.sin(zombie.mesh.userData.animationTime) * 0.25;
-    
-    // Subtle arm swaying - primarily in the forward direction
-    // with very limited side-to-side movement
-    const armSwing = Math.sin(zombie.mesh.userData.animationTime * 1.3) * 0.1;
-    
-    // Animate shoulders for proper arm movement - using negative values for forward reach
-    leftShoulder.rotation.x = -Math.PI / 3 + armSwing; // CHANGED to negative for forward extension
-    rightShoulder.rotation.x = -Math.PI / 3 - armSwing; // CHANGED to negative for forward extension
-    
-    // Very subtle side-to-side movement
-    leftShoulder.rotation.z = Math.PI / 12 + Math.cos(zombie.mesh.userData.animationTime) * 0.03;
-    rightShoulder.rotation.z = -Math.PI / 12 - Math.cos(zombie.mesh.userData.animationTime) * 0.03;
-    
-    // Legs move in shuffling motion
-    leftLeg.rotation.x = swingBase;
-    rightLeg.rotation.x = -swingBase;
+    // Only animate if the zombie is moving (chasing state)
+    if (zombie.mesh.userData.isMoving) {
+      // Update animation time
+      zombie.mesh.userData.animationTime += deltaTime * zombie.mesh.userData.walkSpeed;
+      
+      // Zombie animation is more shuffling/staggered than player animation
+      const swingBase = Math.sin(zombie.mesh.userData.animationTime) * 0.25;
+      
+      // Subtle arm swaying - primarily in the forward direction
+      // with very limited side-to-side movement
+      const armSwing = Math.sin(zombie.mesh.userData.animationTime * 1.3) * 0.1;
+      
+      // Animate shoulders for proper arm movement - using negative values for forward reach
+      leftShoulder.rotation.x = -Math.PI / 3 + armSwing; // CHANGED to negative for forward extension
+      rightShoulder.rotation.x = -Math.PI / 3 - armSwing; // CHANGED to negative for forward extension
+      
+      // Very subtle side-to-side movement
+      leftShoulder.rotation.z = Math.PI / 12 + Math.cos(zombie.mesh.userData.animationTime) * 0.03;
+      rightShoulder.rotation.z = -Math.PI / 12 - Math.cos(zombie.mesh.userData.animationTime) * 0.03;
+      
+      // Legs move in shuffling motion
+      leftLeg.rotation.x = swingBase;
+      rightLeg.rotation.x = -swingBase;
+    } else {
+      // Reset or set to idle pose when not moving
+      // Base arm position for zombie - arms forward
+      leftShoulder.rotation.x = -Math.PI / 3; // Forward reach
+      rightShoulder.rotation.x = -Math.PI / 3; // Forward reach
+      
+      // Standard side position
+      leftShoulder.rotation.z = Math.PI / 12; // Slight outward angle
+      rightShoulder.rotation.z = -Math.PI / 12; // Slight outward angle (mirrored)
+      
+      // Reset legs
+      leftLeg.rotation.x = 0;
+      rightLeg.rotation.x = 0;
+      
+      // For attacking state, we could add special animation here
+      if (zombie.data.state === 'attacking') {
+        // Simple attack animation - arms move slightly up and down
+        const attackTime = Date.now() % 1000 / 1000; // Simple 1-second cycle
+        const attackAngle = Math.sin(attackTime * Math.PI * 2) * 0.2;
+        
+        leftShoulder.rotation.x = -Math.PI / 3 + attackAngle;
+        rightShoulder.rotation.x = -Math.PI / 3 - attackAngle;
+      }
+    }
   }
 }
 

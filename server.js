@@ -7,6 +7,9 @@ const { v4: uuidv4 } = require('uuid');
 // Import the map generation module
 const { generateMap, MAP_ELEMENT_TYPES } = require('./generateMap');
 
+// Import zombie logic
+const zombieLogic = require('./zombieLogic');
+
 // Initialize Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
@@ -254,83 +257,6 @@ function checkMapCollisions(player, map, movement) {
   return { collision: collision, position: player.position };
 }
 
-// Constants for zombie enemies
-const MAX_ZOMBIES = 100;
-const ZOMBIE_SPEED = 0.08;
-const ZOMBIE_DAMAGE = 5;
-const ZOMBIE_HEALTH = 30;
-const ZOMBIE_UPDATE_INTERVAL = 100; // ms - how often to update zombie positions
-const ZOMBIE_ATTACK_RANGE = 1.2;
-const ZOMBIE_DETECTION_RANGE = 15;
-const ZOMBIE_COLLISION_RADIUS = 0.4;
-
-// Function to create a new zombie enemy (with map size constraint)
-function createZombie(mapSize = MAP_SIZE) {
-  return {
-    id: uuidv4(),
-    position: {
-      // Random position within the map (slightly inset from edges)
-      x: (Math.random() * 1.9 - 0.95) * mapSize,
-      y: 0,
-      z: (Math.random() * 1.9 - 0.95) * mapSize
-    },
-    rotation: Math.random() * Math.PI * 2,
-    health: ZOMBIE_HEALTH,
-    target: null, // Current player target
-    state: 'idle', // idle, chasing, attacking
-    lastAttack: 0,
-    speed: ZOMBIE_SPEED
-  };
-}
-
-// Function to check collisions between zombies and map elements
-function checkZombieMapCollisions(zombie, map) {
-  return checkMapCollisions({
-    position: zombie.position,
-    radius: ZOMBIE_COLLISION_RADIUS
-  }, map, null);
-}
-
-// Function to check collisions between zombies and players
-function checkZombiePlayerCollision(zombie, player) {
-  const dx = zombie.position.x - player.position.x;
-  const dz = zombie.position.z - player.position.z;
-  const distanceSquared = dx * dx + dz * dz;
-  const collisionDistance = ZOMBIE_COLLISION_RADIUS + 0.5; // player radius
-  
-  return distanceSquared < (collisionDistance * collisionDistance);
-}
-
-// Function to check collisions between zombies and other zombies
-function checkZombieZombieCollision(zombie1, zombie2) {
-  const dx = zombie1.position.x - zombie2.position.x;
-  const dz = zombie1.position.z - zombie2.position.z;
-  const distanceSquared = dx * dx + dz * dz;
-  const collisionDistance = ZOMBIE_COLLISION_RADIUS * 2;
-  
-  return distanceSquared < (collisionDistance * collisionDistance);
-}
-
-// Find the closest player to a zombie
-function findClosestPlayer(zombie, players) {
-  let closestPlayer = null;
-  let minDistance = ZOMBIE_DETECTION_RANGE;
-  
-  for (const playerId in players) {
-    const player = players[playerId];
-    const dx = zombie.position.x - player.position.x;
-    const dz = zombie.position.z - player.position.z;
-    const distance = Math.sqrt(dx * dx + dz * dz);
-    
-    if (distance < minDistance) {
-      minDistance = distance;
-      closestPlayer = player;
-    }
-  }
-  
-  return closestPlayer;
-}
-
 // Helper function to generate a random color in hex format
 function getRandomColor() {
   // Generate vibrant colors by using higher values in RGB
@@ -351,30 +277,18 @@ io.on('connection', (socket) => {
       roomId = uuidv4();
       const generatedMap = generateMap();
       rooms[roomId] = {
+        id: roomId, // Add id to room object for easier access
         players: {},
         projectiles: [],
         enemies: [],
-        zombies: [], // Add zombies array
+        zombies: [], // Initialize zombies array
         roomName: roomName || `Game ${roomId.substring(0, 6)}`,
         map: generatedMap,
         mapSize: MAP_SIZE // Store map size for boundary checks
       };
       
-      // Generate zombies for the new room
-      for (let i = 0; i < MAX_ZOMBIES; i++) {
-        const zombie = createZombie(generatedMap.size || 50);
-        
-        // Check for collisions with map elements and reposition if needed
-        const collisionResult = checkZombieMapCollisions(zombie, rooms[roomId].map);
-        if (collisionResult.collision) {
-          // Try a different position if collision detected
-          i--; // Retry
-          continue;
-        }
-        
-        // Add zombie to room
-        rooms[roomId].zombies.push(zombie);
-      }
+      // Initialize zombies for the new room
+      zombieLogic.initializeZombiesForRoom(rooms[roomId], checkMapCollisions);
     } else if (!rooms[roomId]) {
       // Room doesn't exist anymore
       socket.emit('roomNotFound');
@@ -574,33 +488,9 @@ setInterval(() => {
           const dz = zombie.position.z - projectile.position.z;
           const distance = Math.sqrt(dx * dx + dz * dz);
           
-          if (distance < ZOMBIE_COLLISION_RADIUS) {
+          if (distance < zombieLogic.ZOMBIE_COLLISION_RADIUS) {
             // Zombie hit!
-            zombie.health -= 10;
-            
-            // Check if zombie died
-            if (zombie.health <= 0) {
-              // Remove zombie
-              const deadZombieId = zombie.id;
-              room.zombies.splice(j, 1);
-              // Notify players about zombie death
-              io.to(roomId).emit('zombieDestroyed', deadZombieId);
-              
-              // Spawn a new zombie after some delay
-              setTimeout(() => {
-                if (rooms[roomId]) { // Make sure room still exists
-                  const newZombie = createZombie(room.map.size || 50);
-                  room.zombies.push(newZombie);
-                  io.to(roomId).emit('zombieCreated', newZombie);
-                }
-              }, 5000);
-            } else {
-              // Just notify about zombie being hit
-              io.to(roomId).emit('zombieHit', {
-                id: zombie.id,
-                health: zombie.health
-              });
-            }
+            zombieLogic.handleZombieHit(zombie, room, io);
             
             // Remove projectile
             room.projectiles.splice(i, 1);
@@ -652,112 +542,15 @@ setInterval(() => {
 setInterval(() => {
   for (const roomId in rooms) {
     const room = rooms[roomId];
+    room.id = roomId; // Ensure room id is set for the zombie logic
     
-    // Skip rooms with no players
-    if (Object.keys(room.players).length === 0) continue;
+    // Update zombies for this room
+    zombieLogic.updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, checkMapCollisions);
     
-    // Update each zombie
-    for (let i = 0; i < room.zombies.length; i++) {
-      const zombie = room.zombies[i];
-      
-      // Find closest player
-      const targetPlayer = findClosestPlayer(zombie, room.players);
-      
-      if (targetPlayer) {
-        // We have a target - move zombie towards player
-        zombie.target = targetPlayer.id;
-        zombie.state = 'chasing';
-        
-        // Calculate direction vector
-        const dx = targetPlayer.position.x - zombie.position.x;
-        const dz = targetPlayer.position.z - zombie.position.z;
-        const distance = Math.sqrt(dx * dx + dz * dz);
-        
-        // Update zombie rotation to face player
-        zombie.rotation = Math.atan2(dx, dz);
-        
-        // Check if close enough to attack
-        if (distance < ZOMBIE_ATTACK_RANGE) {
-          zombie.state = 'attacking';
-          
-          // Attack player every second
-          const now = Date.now();
-          if (now - zombie.lastAttack > 1000) { // 1 second cooldown
-            zombie.lastAttack = now;
-            
-            // Deal damage to player
-            targetPlayer.health -= ZOMBIE_DAMAGE;
-            
-            // Notify players about the hit
-            io.to(roomId).emit('playerHit', {
-              playerId: targetPlayer.id,
-              health: targetPlayer.health
-            });
-          }
-        } else if (distance < ZOMBIE_DETECTION_RANGE) {
-          // Move towards player
-          const moveSpeed = zombie.speed;
-          const normalizedX = dx / distance;
-          const normalizedZ = dz / distance;
-          
-          // Store previous position
-          const prevPosition = { ...zombie.position };
-          
-          // Update position
-          zombie.position.x += normalizedX * moveSpeed;
-          zombie.position.z += normalizedZ * moveSpeed;
-          
-          // Check map boundaries
-          if (!isWithinMapBoundaries(zombie.position)) {
-            zombie.position = clampToMapBoundaries(zombie.position);
-          }
-          
-          // Check for collisions with map elements
-          const collisionResult = checkZombieMapCollisions(zombie, room.map);
-          if (collisionResult.collision) {
-            // Use adjusted position from collision response
-            zombie.position = collisionResult.position;
-          }
-          
-          // Check for collisions with players
-          let playerCollision = false;
-          for (const playerId in room.players) {
-            if (checkZombiePlayerCollision(zombie, room.players[playerId])) {
-              playerCollision = true;
-              break;
-            }
-          }
-          
-          // Check for collisions with other zombies
-          let zombieCollision = false;
-          for (let j = 0; j < room.zombies.length; j++) {
-            if (i !== j && checkZombieZombieCollision(zombie, room.zombies[j])) {
-              zombieCollision = true;
-              break;
-            }
-          }
-          
-          // If collision detected with players or zombies, revert to previous position
-          if (playerCollision || zombieCollision) {
-            zombie.position = prevPosition;
-          }
-        }
-      } else {
-        // No players in range - idle behavior
-        zombie.state = 'idle';
-        zombie.target = null;
-        
-        // Occasionally change rotation when idle
-        if (Math.random() < 0.02) { // 2% chance each update
-          zombie.rotation = Math.random() * Math.PI * 2;
-        }
-      }
-    }
-    
-    // Broadcast zombie updates to clients (if there are changes)
+    // Broadcast zombie updates to clients
     io.to(roomId).emit('zombiesUpdate', room.zombies);
   }
-}, ZOMBIE_UPDATE_INTERVAL);
+}, zombieLogic.ZOMBIE_UPDATE_INTERVAL);
 
 // Start the server
 const PORT = process.env.PORT || 3000;
