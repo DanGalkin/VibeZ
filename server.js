@@ -331,6 +331,15 @@ function findClosestPlayer(zombie, players) {
   return closestPlayer;
 }
 
+// Helper function to generate a random color in hex format
+function getRandomColor() {
+  // Generate vibrant colors by using higher values in RGB
+  const r = Math.floor(Math.random() * 155) + 100; // 100-255
+  const g = Math.floor(Math.random() * 155) + 100; // 100-255
+  const b = Math.floor(Math.random() * 155) + 100; // 100-255
+  return (r << 16) | (g << 8) | b;
+}
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
@@ -382,7 +391,8 @@ io.on('connection', (socket) => {
       rotation: 0,
       sightAngle: 0, // Add initial sight angle
       moving: false, // Explicitly set as not moving initially
-      health: 100
+      health: 100,
+      color: getRandomColor() // Assign a random color to the player
     };
     
     rooms[roomId].players[socket.id] = player;

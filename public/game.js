@@ -329,16 +329,20 @@ function createPlayerMesh(player) {
   
   // Define materials
   const isLocalPlayer = player.id === socket.id;
+  
+  // Use player's assigned color from server if available, otherwise fallback to default colors
+  const playerColor = player.color !== undefined ? player.color : (isLocalPlayer ? 0x3050CC : 0xCC3030);
+  
   const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: isLocalPlayer ? 0x3050CC : 0xCC3030, // Blue for local, red for others
+    color: playerColor, // Use the player's color
     roughness: 0.7
   });
   const headMaterial = new THREE.MeshStandardMaterial({
-    color: 0xFFCCA0, // Skin color
+    color: 0xFFCCA0, // Keep skin color consistent
     roughness: 0.5
   });
   const limbMaterial = new THREE.MeshStandardMaterial({
-    color: isLocalPlayer ? 0x3050CC : 0xCC3030, // Match body color
+    color: playerColor, // Match body color
     roughness: 0.7
   });
   
@@ -460,7 +464,8 @@ function createPlayerMesh(player) {
   playerGroup.userData = {
     animationTime: 0,
     walking: player.moving === true, // Explicit check
-    walkSpeed: 8 // Animation speed
+    walkSpeed: 8, // Animation speed
+    color: playerColor // Store the player's color
   };
   
   // Add to scene
@@ -972,6 +977,7 @@ function setupSocketEvents(ui) {
   // New player joined
   socket.on('playerJoined', (player) => {
     console.log('Player joined:', player.id);
+    console.log('Player color:', player.color); // Log the player's color
     players[player.id] = {
       mesh: createPlayerMesh(player),
       data: {
