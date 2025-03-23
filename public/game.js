@@ -665,7 +665,7 @@ function updateMovement() {
       moving: true // Explicitly set moving flag to true
     });
     
-  } else if (localPlayer.userData && localPlayer.userData.walking) {
+  } else if (localPlayer.userData && !localPlayer.userData.walking) {
     // Tell server player stopped moving - using current rotation from sight controller
     socket.emit('playerMove', {
       position: {
