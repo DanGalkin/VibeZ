@@ -1,5 +1,7 @@
 // Import map creation functions
 import { createMapElements } from './map.js';
+// Import zombie-related functions
+import { createZombieMesh, animateZombies, removeZombie, handleZombieHit } from './zombies.js';
 
 // Connect to Socket.IO server
 const socket = io();
@@ -474,92 +476,6 @@ function createPlayerMesh(player) {
   return playerGroup;
 }
 
-// Create a zombie mesh
-function createZombieMesh(zombie) {
-  // Create a group for the zombie
-  const zombieGroup = new THREE.Group();
-  
-  // Define materials - green for zombies
-  const bodyMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2AB54B, // Zombie green
-    roughness: 0.8
-  });
-  const headMaterial = new THREE.MeshStandardMaterial({
-    color: 0x1A9639, // Slightly darker green for head
-    roughness: 0.7
-  });
-  
-  // Body - similar to player but slightly hunched
-  const bodyGeometry = new THREE.BoxGeometry(0.6, 0.8, 0.3);
-  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-  body.position.y = 0.9;
-  body.rotation.x = 0.2; // Slight hunch
-  body.castShadow = true;
-  zombieGroup.add(body);
-  
-  // Head - like player but with no face details
-  const headGeometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-  const head = new THREE.Mesh(headGeometry, headMaterial);
-  head.position.y = 1.7;
-  head.castShadow = true;
-  zombieGroup.add(head);
-  
-  // Arms - stretched outward
-  const armGeometry = new THREE.BoxGeometry(0.25, 0.8, 0.25);
-  
-  // Left arm - stretched out to the left
-  const leftArm = new THREE.Mesh(armGeometry, bodyMaterial);
-  leftArm.position.set(0.425, 0.9, 0);
-  leftArm.rotation.z = -Math.PI / 4; // Stretched outward
-  leftArm.castShadow = true;
-  zombieGroup.add(leftArm);
-  
-  // Right arm - stretched out to the right
-  const rightArm = new THREE.Mesh(armGeometry, bodyMaterial);
-  rightArm.position.set(-0.425, 0.9, 0);
-  rightArm.rotation.z = Math.PI / 4; // Stretched outward
-  rightArm.castShadow = true;
-  zombieGroup.add(rightArm);
-  
-  // Legs
-  const legGeometry = new THREE.BoxGeometry(0.25, 0.8, 0.25);
-  
-  // Left leg
-  const leftLeg = new THREE.Mesh(legGeometry, bodyMaterial);
-  leftLeg.position.set(0.15, 0.4, 0);
-  leftLeg.castShadow = true;
-  zombieGroup.add(leftLeg);
-  
-  // Right leg
-  const rightLeg = new THREE.Mesh(legGeometry, bodyMaterial);
-  rightLeg.position.set(-0.15, 0.4, 0);
-  rightLeg.castShadow = true;
-  zombieGroup.add(rightLeg);
-  
-  // Position the zombie
-  zombieGroup.position.set(
-    zombie.position.x,
-    zombie.position.y,
-    zombie.position.z
-  );
-  
-  // Set rotation
-  zombieGroup.rotation.y = zombie.rotation;
-  
-  // Store animation state
-  zombieGroup.userData = {
-    id: zombie.id,
-    animationTime: Math.random() * 100, // Random start phase
-    walkSpeed: 3 + Math.random() * 2, // Slightly randomized walk speed
-    state: zombie.state || 'idle'
-  };
-  
-  // Add to scene
-  scene.add(zombieGroup);
-  
-  return zombieGroup;
-}
-
 // Create a projectile mesh
 function createProjectile(projectile) {
   const geometry = new THREE.SphereGeometry(0.2, 8, 8);
@@ -589,14 +505,6 @@ function removeProjectile(projectileId) {
   if (projectiles[projectileId]) {
     scene.remove(projectiles[projectileId].mesh);
     delete projectiles[projectileId];
-  }
-}
-
-// Remove zombie from scene
-function removeZombie(zombieId) {
-  if (zombies[zombieId]) {
-    scene.remove(zombies[zombieId].mesh);
-    delete zombies[zombieId];
   }
 }
 
@@ -748,37 +656,6 @@ function animatePlayers(deltaTime) {
   }
 }
 
-// Animate zombies
-function animateZombies(deltaTime) {
-  for (const id in zombies) {
-    const zombie = zombies[id];
-    if (!zombie.mesh || !zombie.mesh.userData) continue;
-    
-    // Always animate zombies since they're always in motion
-    zombie.mesh.userData.animationTime += deltaTime * zombie.mesh.userData.walkSpeed;
-    
-    // Find limbs
-    const leftArm = zombie.mesh.children[2]; // leftArm
-    const rightArm = zombie.mesh.children[3]; // rightArm
-    const leftLeg = zombie.mesh.children[4]; // leftLeg
-    const rightLeg = zombie.mesh.children[5]; // rightLeg
-    
-    if (!leftArm || !rightArm || !leftLeg || !rightLeg) continue;
-    
-    // Zombie animation is more shuffling/staggered than player animation
-    const swingBase = Math.sin(zombie.mesh.userData.animationTime) * 0.25;
-    const shuffleOffset = Math.cos(zombie.mesh.userData.animationTime * 2.1) * 0.1;
-    
-    // Arms are kept in outstretched position, but with small movements
-    leftArm.rotation.z = -Math.PI / 4 + shuffleOffset;
-    rightArm.rotation.z = Math.PI / 4 - shuffleOffset;
-    
-    // Legs move in shuffling motion
-    leftLeg.rotation.x = swingBase;
-    rightLeg.rotation.x = -swingBase;
-  }
-}
-
 // Reset player limbs to default position
 function resetPlayerLimbs(playerMesh) {
   const limbs = ["rightArm", "leftArm", "leftLeg", "rightLeg"];
@@ -804,7 +681,7 @@ function animate(time) {
   updateMovement();
   updateProjectiles();
   animatePlayers(deltaTime);
-  animateZombies(deltaTime); // Add zombie animation
+  animateZombies(zombies, deltaTime); // Using imported function now
   
   // Update camera to follow local player
   if (localPlayer && gameActive) {
@@ -961,8 +838,10 @@ function setupSocketEvents(ui) {
     // Create meshes for all existing zombies
     if (state.zombies) {
       for (const zombie of state.zombies) {
+        const zombieMesh = createZombieMesh(zombie);
+        scene.add(zombieMesh); // Add the mesh to the scene
         zombies[zombie.id] = {
-          mesh: createZombieMesh(zombie),
+          mesh: zombieMesh,
           data: zombie
         };
       }
@@ -1076,15 +955,17 @@ function setupSocketEvents(ui) {
   
   // New zombie created
   socket.on('zombieCreated', (zombie) => {
+    const zombieMesh = createZombieMesh(zombie);
+    scene.add(zombieMesh); // Add the mesh to the scene
     zombies[zombie.id] = {
-      mesh: createZombieMesh(zombie),
+      mesh: zombieMesh,
       data: zombie
     };
   });
   
   // Zombie destroyed
   socket.on('zombieDestroyed', (zombieId) => {
-    removeZombie(zombieId);
+    removeZombie(zombieId, zombies, scene);
   });
   
   // Zombie updates
@@ -1104,8 +985,10 @@ function setupSocketEvents(ui) {
         zombies[zombie.id].data = zombie;
       } else {
         // Create if doesn't exist
+        const zombieMesh = createZombieMesh(zombie);
+        scene.add(zombieMesh); // Add the mesh to the scene
         zombies[zombie.id] = {
-          mesh: createZombieMesh(zombie),
+          mesh: zombieMesh,
           data: zombie
         };
       }
@@ -1115,14 +998,7 @@ function setupSocketEvents(ui) {
   // Zombie hit
   socket.on('zombieHit', (data) => {
     if (zombies[data.id]) {
-      // Flash zombie red
-      const bodyMaterial = zombies[data.id].mesh.children[0].material;
-      const originalColor = bodyMaterial.color.clone();
-      
-      bodyMaterial.color.set(0xff0000); // Red
-      setTimeout(() => {
-        bodyMaterial.color.copy(originalColor);
-      }, 100);
+      handleZombieHit(zombies[data.id]); // Using imported function
     }
   });
   
@@ -1152,8 +1028,10 @@ function setupSocketEvents(ui) {
           zombies[zombie.id].data = zombie;
         } else {
           // Create new zombie if it doesn't exist
+          const zombieMesh = createZombieMesh(zombie);
+          scene.add(zombieMesh); // Add the mesh to the scene
           zombies[zombie.id] = {
-            mesh: createZombieMesh(zombie),
+            mesh: zombieMesh,
             data: zombie
           };
         }
@@ -1162,7 +1040,7 @@ function setupSocketEvents(ui) {
       // Remove zombies that no longer exist
       for (const zombieId in zombies) {
         if (!state.zombies.some(z => z.id === zombieId)) {
-          removeZombie(zombieId);
+          removeZombie(zombieId, zombies, scene);
         }
       }
     }
