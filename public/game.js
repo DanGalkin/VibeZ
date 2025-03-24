@@ -508,9 +508,9 @@ function removeProjectile(projectileId) {
   }
 }
 
-// Update player movement with animation and boundary check
-function updateMovement() {
-  if (!localPlayer || !gameActive) return;
+// Update player movement with animation and boundary check - completely rewritten
+function updateMovement(deltaTime) {
+  if (!gameActive || !localPlayer) return;
   
   // Calculate movement direction relative to camera view
   const moveDirection = new THREE.Vector3(0, 0, 0);
@@ -538,54 +538,50 @@ function updateMovement() {
     localPlayer.userData.walking = isWalking;
   }
   
-  // Normalize if moving diagonally
+  // Client-side prediction
   if (isWalking) {
     moveDirection.normalize();
     
-    // Store previous position before moving (for client-side prediction)
+    // Get player speed from server data
+    const playerSpeed = players[socket.id]?.data?.speed || 5.0;
+    
+    // Store previous position
     const prevPosition = {
       x: localPlayer.position.x,
       z: localPlayer.position.z
     };
     
-    // Update local player position - temporary for client-side prediction
-    const newX = prevPosition.x + moveDirection.x * PLAYER_SPEED;
-    const newZ = prevPosition.z + moveDirection.z * PLAYER_SPEED;
+    // Predict new position (will be corrected by server if needed)
+    const newX = prevPosition.x + moveDirection.x * playerSpeed * deltaTime;
+    const newZ = prevPosition.z + moveDirection.z * playerSpeed * deltaTime;
     
-    // Update position using smooth movement
+    // Update local position for smooth movement
     localPlayer.position.x = newX;
     localPlayer.position.z = newZ;
     
-    // Client-side boundary check (server will enforce this too)
-    if (Math.abs(localPlayer.position.x) > MAP_SIZE || Math.abs(localPlayer.position.z) > MAP_SIZE) {
-      localPlayer.position.x = Math.max(-MAP_SIZE, Math.min(MAP_SIZE, localPlayer.position.x));
-      localPlayer.position.z = Math.max(-MAP_SIZE, Math.min(MAP_SIZE, localPlayer.position.z));
-    }
-    
-    // Tell server about movement - using current body rotation from sight controller
+    // Send movement input to server along with direction vector
     socket.emit('playerMove', {
-      position: {
-        x: localPlayer.position.x,
-        y: 0, // Ground level
-        z: localPlayer.position.z
+      direction: { 
+        x: moveDirection.x, 
+        z: moveDirection.z 
       },
+      position: { x: newX, y: 0, z: newZ },
       rotation: localPlayer.rotation.y,
-      moving: true // Explicitly set moving flag to true
+      moving: true
     });
-    
-  } else if (localPlayer.userData && !localPlayer.userData.walking) {
-    // Tell server player stopped moving - using current rotation from sight controller
+  } else if (localPlayer.userData?.walking) {
+    // Player stopped moving
     socket.emit('playerMove', {
+      direction: { x: 0, z: 0 },
       position: {
         x: localPlayer.position.x,
         y: 0,
         z: localPlayer.position.z
       },
       rotation: localPlayer.rotation.y,
-      moving: false // Explicitly set moving flag to false
+      moving: false
     });
     
-    // Reset walking state
     localPlayer.userData.walking = false;
   }
 }
@@ -668,20 +664,35 @@ function resetPlayerLimbs(playerMesh) {
 }
 
 // Animation loop with timing for animations
-let lastTime = 0;
+let lastUpdateTime = performance.now(); // Track the last update time
+
 function animate(time) {
-  const deltaTime = (time - lastTime) / 1000; // Convert to seconds
-  lastTime = time;
+  const deltaTime = (time - lastUpdateTime) / 1000; // Convert ms to seconds
+  lastUpdateTime = time;
+  
+  const cappedDeltaTime = Math.min(deltaTime, 0.1); // Cap delta time to avoid large jumps
   
   requestAnimationFrame(animate);
   
-  // Update ground mouse position on every frame
-  updateGroundMousePosition();
+  // Handle smooth position corrections
+  if (localPlayer && localPlayer.userData && localPlayer.userData.targetPosition) {
+    const elapsed = (performance.now() - localPlayer.userData.positionCorrectionTime) / 1000;
+    if (elapsed < 0.1) { // Apply correction over 100ms
+      const alpha = Math.min(elapsed / 0.1, 1.0);
+      localPlayer.position.lerp(localPlayer.userData.targetPosition, alpha);
+    } else {
+      // Correction complete
+      localPlayer.position.copy(localPlayer.userData.targetPosition);
+      delete localPlayer.userData.targetPosition;
+      delete localPlayer.userData.positionCorrectionTime;
+    }
+  }
   
-  updateMovement();
+  // Update movement with delta time
+  updateMovement(cappedDeltaTime);
   updateProjectiles();
-  animatePlayers(deltaTime);
-  animateZombies(zombies, deltaTime); // Using imported function now
+  animatePlayers(cappedDeltaTime);
+  animateZombies(zombies, cappedDeltaTime);
   
   // Update camera to follow local player
   if (localPlayer && gameActive) {
@@ -1094,6 +1105,30 @@ function setupSocketEvents(ui) {
         }
       }
     }
+  });
+
+  // Handle server position corrections
+  socket.on('playerPositionCorrection', (data) => {
+    if (!localPlayer) return;
+    
+    // Apply position correction from server
+    // Use lerp for smoother transitions when corrections are small
+    const currentPos = localPlayer.position;
+    const targetPos = new THREE.Vector3(data.position.x, currentPos.y, data.position.z);
+    const distance = currentPos.distanceTo(targetPos);
+    
+    // If the correction is significant, apply it immediately
+    // Otherwise, lerp over a short period for visual smoothness
+    if (distance > 2.0) {
+      localPlayer.position.copy(targetPos);
+    } else {
+      // Store the target for smooth interpolation in the animation loop
+      localPlayer.userData.targetPosition = targetPos;
+      localPlayer.userData.positionCorrectionTime = performance.now();
+    }
+    
+    // Update movement state
+    localPlayer.userData.walking = data.moving === true;
   });
 }
 

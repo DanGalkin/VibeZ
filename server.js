@@ -44,6 +44,7 @@ const rooms = {};
 
 // Constants for the game
 const MAP_SIZE = 50; // Half-width/height of the map (total size is 100x100)
+const PLAYER_SPEED = 5.0; // Units per second (server-controlled speed)
 
 // Check if a position is within map boundaries
 function isWithinMapBoundaries(position) {
@@ -284,7 +285,8 @@ io.on('connection', (socket) => {
         zombies: [], // Initialize zombies array
         roomName: roomName || `Game ${roomId.substring(0, 6)}`,
         map: generatedMap,
-        mapSize: MAP_SIZE // Store map size for boundary checks
+        mapSize: MAP_SIZE, // Store map size for boundary checks
+        lastZombieUpdate: Date.now() // Initialize timestamp for zombie movement calculations
       };
       
       // Initialize zombies for the new room
@@ -306,7 +308,9 @@ io.on('connection', (socket) => {
       sightAngle: 0, // Add initial sight angle
       moving: false, // Explicitly set as not moving initially
       health: 100,
-      color: getRandomColor() // Assign a random color to the player
+      color: getRandomColor(), // Assign a random color to the player
+      speed: PLAYER_SPEED, // Add the speed property
+      lastUpdateTime: Date.now() // Track the last update time for movement validation
     };
     
     rooms[roomId].players[socket.id] = player;
@@ -330,34 +334,63 @@ io.on('connection', (socket) => {
   socket.on('playerMove', (movement) => {
     if (!socket.roomId || !rooms[socket.roomId] || !rooms[socket.roomId].players[socket.id]) return;
     
-    // Update player position
     const room = rooms[socket.roomId];
     const player = room.players[socket.id];
     const prevPosition = { ...player.position };
     
-    // Update position temporarily for collision check
-    player.position = movement.position;
+    // Movement is now fully server-based. We calculate the new position
+    // using the input direction from the client and the server's timestep
+    const currentTime = Date.now();
+    const deltaTime = (currentTime - player.lastUpdateTime) / 1000; // Convert ms to seconds
+    player.lastUpdateTime = currentTime;
+    
+    // Cap delta time to prevent teleporting after connection issues
+    const cappedDeltaTime = Math.min(deltaTime, 0.2);
+    
+    if (movement.moving && movement.direction) {
+      // Normalize direction vector
+      const length = Math.sqrt(movement.direction.x * movement.direction.x + movement.direction.z * movement.direction.z);
+      if (length > 0) {
+        const normalizedDir = {
+          x: movement.direction.x / length,
+          z: movement.direction.z / length
+        };
+        
+        // Calculate new position based on direction and speed
+        const newX = player.position.x + normalizedDir.x * player.speed * cappedDeltaTime;
+        const newZ = player.position.z + normalizedDir.z * player.speed * cappedDeltaTime;
+        
+        // Update player position with server-calculated values
+        player.position = {
+          x: newX,
+          y: player.position.y,
+          z: newZ
+        };
+      }
+    }
+    
+    // Update player rotation from client input
+    player.rotation = movement.rotation;
+    player.moving = movement.moving === true; // Force to boolean
     
     // Check collisions with improved function
-    const collisionResult = checkMapCollisions(player, room.map, movement);
+    const collisionResult = checkMapCollisions(player, room.map, null);
     
     if (collisionResult.collision) {
       // Collision detected, use corrected position from collision response
       player.position = collisionResult.position;
-      
-      // Tell client about corrected position
-      socket.emit('playerCollision', { position: player.position });
     }
     
     // Double-check to make sure player is within map boundaries
     if (!isWithinMapBoundaries(player.position)) {
       player.position = clampToMapBoundaries(player.position);
-      socket.emit('playerCollision', { position: player.position });
     }
     
-    // Update player rotation and movement status
-    player.rotation = movement.rotation;
-    player.moving = movement.moving === true; // Force to boolean
+    // Send corrected position back to the client who moved
+    socket.emit('playerPositionCorrection', {
+      position: player.position,
+      moving: player.moving
+    });
     
     // Broadcast movement to other players
     socket.to(socket.roomId).emit('playerMoved', {

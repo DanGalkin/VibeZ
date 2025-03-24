@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 
 // Constants for zombie enemies
 const MAX_ZOMBIES = 100;
-const ZOMBIE_SPEED = 0.1;
+const ZOMBIE_SPEED = 2.0; // Units per second - distance a zombie walks in one second
 const ZOMBIE_DAMAGE = 5;
 const ZOMBIE_HEALTH = 30;
 const ZOMBIE_UPDATE_INTERVAL = 100; // ms - how often to update zombie positions
@@ -11,15 +11,15 @@ const ZOMBIE_DETECTION_RANGE = 15; // This is still used for when zombies know p
 const ZOMBIE_SIGHT_RANGE = 10; // New constant for initial detection distance
 const ZOMBIE_SIGHT_ANGLE = Math.PI / 2; // 90 degrees in radians (PI/2)
 const ZOMBIE_AWARENESS_ANGLE = Math.PI; // 180 degrees in radians for hearing/awareness
-const ZOMBIE_TURN_SPEED = 0.1; // How quickly zombies turn to investigate (radians per update)
-const ZOMBIE_COLLISION_RADIUS = 0.4;  
+const ZOMBIE_TURN_SPEED = 0.4; // Radians per second - how quickly zombies can turn
+const ZOMBIE_COLLISION_RADIUS = 0.4;
 
 // Constants for idle behavior
 const IDLE_STATES = ['standing', 'turning', 'wandering'];
 const IDLE_MIN_DURATION = 5000; // 5 seconds
 const IDLE_MAX_DURATION = 10000; // 10 seconds
-const IDLE_TURN_SPEED = 0.03; // radians per update
-const IDLE_WALK_SPEED = 0.04; // slower than chase speed
+const IDLE_TURN_SPEED = 0.2; // radians per second
+const IDLE_WALK_SPEED = 0.6; // units per second - slower than chase speed
 
 // Function to create a new zombie enemy (with map size constraint)
 function createZombie(mapSize = 50) {
@@ -288,6 +288,12 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
   if (Object.keys(room.players).length === 0) return;
   
   const now = Date.now();
+  // Calculate delta time in seconds since last update
+  const deltaTime = (now - (room.lastZombieUpdate || now)) / 1000;
+  room.lastZombieUpdate = now; // Store current time for next update
+  
+  // Cap delta time to avoid big jumps if server had a lag spike
+  const cappedDeltaTime = Math.min(deltaTime, 0.2);
   
   // Update each zombie
   for (let i = 0; i < room.zombies.length; i++) {
@@ -337,9 +343,6 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
           zombie.target = targetPlayer.id;
           zombie.state = 'attacking';
           
-          // Set rotation directly for attacks
-          zombie.rotation = Math.atan2(dx, dz);
-          
           // Attack player every second
           if (now - zombie.lastAttack > 1000) { // 1 second cooldown
             zombie.lastAttack = now;
@@ -358,17 +361,17 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
           zombie.state = 'chasing';
           zombie.awarenessTarget = null; // Clear any investigation target
           
-          // Move towards player
-          const moveSpeed = zombie.speed;
+          // Calculate movement distance based on speed and elapsed time
+          const moveDistance = zombie.speed * cappedDeltaTime;
           const normalizedX = dx / distance;
           const normalizedZ = dz / distance;
           
           // Store previous position
           const prevPosition = { ...zombie.position };
           
-          // Update position
-          zombie.position.x += normalizedX * moveSpeed;
-          zombie.position.z += normalizedZ * moveSpeed;
+          // Update position with time-based movement
+          zombie.position.x += normalizedX * moveDistance;
+          zombie.position.z += normalizedZ * moveDistance;
           
           // Check map boundaries
           if (!isWithinMapBoundaries(zombie.position)) {
@@ -428,17 +431,17 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
           zombie.investigationStartTime = null;
           zombie.target = null;
         } else {
-          // Move toward the last known position
-          const moveSpeed = zombie.speed * 0.7; // Slightly slower when investigating
+          // Move toward the last known position with time-based movement
+          const moveDistance = zombie.speed * 0.7 * cappedDeltaTime; // 70% of normal speed when investigating
           const normalizedX = dx / distance;
           const normalizedZ = dz / distance;
           
           // Store previous position
           const prevPosition = { ...zombie.position };
           
-          // Update position
-          zombie.position.x += normalizedX * moveSpeed;
-          zombie.position.z += normalizedZ * moveSpeed;
+          // Update position with time-based movement
+          zombie.position.x += normalizedX * moveDistance;
+          zombie.position.z += normalizedZ * moveDistance;
           
           // Check for collisions and adjust position
           if (!isWithinMapBoundaries(zombie.position)) {
@@ -482,10 +485,9 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
         }
       } else if (detectionType === 'investigate') {
         // Player detected in awareness range but not in direct sight
-        // Don't immediately chase - turn to investigate
+        // Turn toward the player and investigate
         zombie.state = 'investigating';
         zombie.awarenessTarget = targetPlayer.id;
-        zombie.target = null; // Ensure no chase target is set
         
         // Calculate target rotation to face the player
         const targetRotation = Math.atan2(dx, dz);
@@ -498,86 +500,64 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
         if (rotationDiff > Math.PI) rotationDiff -= 2 * Math.PI;
         if (rotationDiff < -Math.PI) rotationDiff += 2 * Math.PI;
         
-        // Apply turn with limited speed
+        // Apply turn with limited speed (using deltaTime)
         if (Math.abs(rotationDiff) > 0.05) { // Small threshold to avoid jittering
-          zombie.rotation += Math.sign(rotationDiff) * Math.min(ZOMBIE_TURN_SPEED, Math.abs(rotationDiff));
+          // Scale turn speed by deltaTime for consistent turning speed regardless of frame rate
+          zombie.rotation += Math.sign(rotationDiff) * Math.min(ZOMBIE_TURN_SPEED * cappedDeltaTime, Math.abs(rotationDiff));
           
           // Normalize rotation to be between 0 and 2π
           if (zombie.rotation < 0) zombie.rotation += 2 * Math.PI;
           if (zombie.rotation > 2 * Math.PI) zombie.rotation -= 2 * Math.PI;
-          
-          // During turning, don't move at all
         } else {
-          // Once facing the right direction, check if player is now in direct sight cone
-          // Recalculate whether the player is now in the direct line of sight
+          // We've turned to face the direction, but don't see the player yet
+          // This can happen if there's an obstacle, so pause briefly
+          // The next cycle will either detect the player in view or continue turning
+          
+          // Still can't directly see them - investigate by moving slowly forward
+          // Scale movement by deltaTime for consistent speed
+          const moveDistance = zombie.speed * 0.4 * cappedDeltaTime; // 40% of normal speed
           const zombieForwardX = Math.sin(zombie.rotation);
           const zombieForwardZ = Math.cos(zombie.rotation);
-          const normalizedDirX = dx / distance;
-          const normalizedDirZ = dz / distance;
-          const dotProduct = zombieForwardX * normalizedDirX + zombieForwardZ * normalizedDirZ;
-          const cosHalfAngle = Math.cos(ZOMBIE_SIGHT_ANGLE / 2);
           
-          // If they're now in our direct sight cone AND we can see them, switch to chase
-          // otherwise continue investigating
-          if (dotProduct > cosHalfAngle && 
-              hasLineOfSight(zombie.position, targetPlayer.position, room.map, checkMapCollisions)) {
-            // Now we can see them directly - next update will chase
-            // Don't immediately set chase state - let the detection phase handle it
-          } else {
-            // Still can't directly see them - investigate by moving slowly forward
-            const moveSpeed = zombie.speed * 0.4; // Slower than chase
-            const zombieForwardX = Math.sin(zombie.rotation);
-            const zombieForwardZ = Math.cos(zombie.rotation);
-            
-            // Store previous position
-            const prevPosition = { ...zombie.position };
-            
-            // Move forward in the direction we're facing
-            zombie.position.x += zombieForwardX * moveSpeed;
-            zombie.position.z += zombieForwardZ * moveSpeed;
-            
-            // Check map boundaries
-            if (!isWithinMapBoundaries(zombie.position)) {
-              zombie.position = clampToMapBoundaries(zombie.position);
+          // Store previous position
+          const prevPosition = { ...zombie.position };
+          
+          // Move forward with time-based movement
+          zombie.position.x += zombieForwardX * moveDistance;
+          zombie.position.z += zombieForwardZ * moveDistance;
+          
+          // Check for collisions and adjust position
+          if (!isWithinMapBoundaries(zombie.position)) {
+            zombie.position = clampToMapBoundaries(zombie.position);
+          }
+          
+          // Check for collisions with map elements
+          const collisionResult = checkZombieMapCollisions(zombie, room.map, checkMapCollisions);
+          if (collisionResult.collision) {
+            zombie.position = collisionResult.position;
+          }
+          
+          // Check for collisions with players
+          let playerCollision = false;
+          for (const playerId in room.players) {
+            if (checkZombiePlayerCollision(zombie, room.players[playerId])) {
+              playerCollision = true;
+              break;
             }
-            
-            // Check for collisions with map elements
-            const collisionResult = checkZombieMapCollisions(zombie, room.map, checkMapCollisions);
-            if (collisionResult.collision) {
-              zombie.position = collisionResult.position;
+          }
+          
+          // Check for collisions with other zombies
+          let zombieCollision = false;
+          for (let j = 0; j < room.zombies.length; j++) {
+            if (i !== j && checkZombieZombieCollision(zombie, room.zombies[j])) {
+              zombieCollision = true;
+              break;
             }
-            
-            // Check for collisions and revert if needed
-            let hasCollision = false;
-            
-            // Check for collisions with players
-            for (const playerId in room.players) {
-              if (checkZombiePlayerCollision(zombie, room.players[playerId])) {
-                hasCollision = true;
-                break;
-              }
-            }
-            
-            // Check for collisions with other zombies
-            if (!hasCollision) {
-              for (let j = 0; j < room.zombies.length; j++) {
-                if (i !== j && checkZombieZombieCollision(zombie, room.zombies[j])) {
-                  hasCollision = true;
-                  break;
-                }
-              }
-            }
-            
-            // If collision detected, revert to previous position
-            if (hasCollision) {
-              zombie.position = prevPosition;
-            }
-            
-            // Occasionally pause while investigating
-            if (Math.random() < 0.05) {
-              // Small chance to look around slightly when investigating
-              zombie.rotation += (Math.random() - 0.5) * 0.2;
-            }
+          }
+          
+          // If collision detected with players or zombies, revert to previous position
+          if (playerCollision || zombieCollision) {
+            zombie.position = prevPosition;
           }
         }
       }
@@ -605,8 +585,8 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
           break;
           
         case 'turning':
-          // Slowly turn in place
-          zombie.rotation += IDLE_TURN_SPEED;
+          // Slowly turn in place (using deltaTime for consistent speed)
+          zombie.rotation += IDLE_TURN_SPEED * cappedDeltaTime;
           if (zombie.rotation > Math.PI * 2) {
             zombie.rotation -= Math.PI * 2;
           }
@@ -621,9 +601,9 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
           const dirX = Math.sin(zombie.rotation);
           const dirZ = Math.cos(zombie.rotation);
           
-          // Update position
-          zombie.position.x += dirX * IDLE_WALK_SPEED;
-          zombie.position.z += dirZ * IDLE_WALK_SPEED;
+          // Update position with time-based movement
+          zombie.position.x += dirX * IDLE_WALK_SPEED * cappedDeltaTime;
+          zombie.position.z += dirZ * IDLE_WALK_SPEED * cappedDeltaTime;
           
           // Check map boundaries
           if (!isWithinMapBoundaries(zombie.position)) {
