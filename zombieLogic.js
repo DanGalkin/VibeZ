@@ -2,29 +2,51 @@ const { v4: uuidv4 } = require('uuid');
 
 // Constants for zombie enemies
 const MAX_ZOMBIES = 100;
-const ZOMBIE_SPEED = 0.08;
+const ZOMBIE_SPEED = 0.1;
 const ZOMBIE_DAMAGE = 5;
 const ZOMBIE_HEALTH = 30;
 const ZOMBIE_UPDATE_INTERVAL = 100; // ms - how often to update zombie positions
 const ZOMBIE_ATTACK_RANGE = 1.2;
-const ZOMBIE_DETECTION_RANGE = 15;
-const ZOMBIE_COLLISION_RADIUS = 0.4;
+const ZOMBIE_DETECTION_RANGE = 15; // This is still used for when zombies know player is there
+const ZOMBIE_SIGHT_RANGE = 10; // New constant for initial detection distance
+const ZOMBIE_SIGHT_ANGLE = Math.PI / 2; // 90 degrees in radians (PI/2)
+const ZOMBIE_AWARENESS_ANGLE = Math.PI; // 180 degrees in radians for hearing/awareness
+const ZOMBIE_TURN_SPEED = 0.1; // How quickly zombies turn to investigate (radians per update)
+const ZOMBIE_COLLISION_RADIUS = 0.4;  
+
+// Constants for idle behavior
+const IDLE_STATES = ['standing', 'turning', 'wandering'];
+const IDLE_MIN_DURATION = 5000; // 5 seconds
+const IDLE_MAX_DURATION = 10000; // 10 seconds
+const IDLE_TURN_SPEED = 0.03; // radians per update
+const IDLE_WALK_SPEED = 0.04; // slower than chase speed
 
 // Function to create a new zombie enemy (with map size constraint)
 function createZombie(mapSize = 50) {
+  const idleState = IDLE_STATES[Math.floor(Math.random() * IDLE_STATES.length)];
+  const idleDuration = IDLE_MIN_DURATION + Math.random() * (IDLE_MAX_DURATION - IDLE_MIN_DURATION);
+  
   return {
     id: uuidv4(),
     position: {
       // Random position within the map (slightly inset from edges)
       x: (Math.random() * 1.9 - 0.95) * mapSize,
-      y: 0,
+      y: -0.8, // Start below ground
       z: (Math.random() * 1.9 - 0.95) * mapSize
     },
     rotation: Math.random() * Math.PI * 2,
     health: ZOMBIE_HEALTH,
     target: null, // Current player target
-    state: 'idle', // idle, chasing, attacking
+    state: 'rising', // rising, idle, investigating, chasing, attacking, investigating_last_position
+    risingStartTime: Date.now(), // Track when rising started
+    risingDuration: 1000, // Rising animation lasts 1 second
+    idleState: idleState, // standing, turning, wandering
+    idleStateStartTime: Date.now(),
+    idleStateDuration: idleDuration,
     lastAttack: 0,
+    awarenessTarget: null, // For tracking a player in the wider 180-degree awareness range
+    lastKnownPlayerPos: null, // Store last known position of a player that went out of sight
+    investigationStartTime: null, // When the zombie started investigating a position
     speed: ZOMBIE_SPEED
   };
 }
@@ -57,28 +79,188 @@ function checkZombieZombieCollision(zombie1, zombie2) {
   return distanceSquared < (collisionDistance * collisionDistance);
 }
 
-// Find the closest player to a zombie
-function findClosestPlayer(zombie, players) {
-  let closestPlayer = null;
-  let minDistance = ZOMBIE_DETECTION_RANGE;
+// Check if there's a clear line of sight between two positions
+function hasLineOfSight(fromPosition, toPosition, map, checkMapCollisions) {
+  // Direction vector from zombie to player
+  const dx = toPosition.x - fromPosition.x;
+  const dz = toPosition.z - fromPosition.z;
+  const distance = Math.sqrt(dx * dx + dz * dz);
   
-  for (const playerId in players) {
-    const player = players[playerId];
-    const dx = zombie.position.x - player.position.x;
-    const dz = zombie.position.z - player.position.z;
-    const distance = Math.sqrt(dx * dx + dz * dz);
+  // If they're very close, consider line of sight clear
+  if (distance < 1.0) return true;
+  
+  // Normalize direction
+  const dirX = dx / distance;
+  const dirZ = dz / distance;
+  
+  // Number of steps to check (more steps = more precise but slower)
+  const steps = Math.ceil(distance * 2); // Check twice per unit distance
+  const stepSize = distance / steps;
+  
+  // Check points along the line
+  for (let i = 1; i < steps; i++) {
+    // Calculate test point (slightly above ground to avoid terrain issues)
+    const testPoint = {
+      position: {
+        x: fromPosition.x + dirX * stepSize * i,
+        y: 0.5, // Slightly above ground
+        z: fromPosition.z + dirZ * stepSize * i
+      },
+      radius: 0.2 // Small radius for obstacle detection
+    };
     
-    if (distance < minDistance) {
-      minDistance = distance;
-      closestPlayer = player;
+    // Check for collisions at this test point
+    const collision = checkMapCollisions(testPoint, map);
+    
+    // If there's a collision, line of sight is blocked
+    if (collision.collision) {
+      return false;
     }
   }
   
-  return closestPlayer;
+  // If we got here, no obstacles were found
+  return true;
+}
+
+// Find the closest player to a zombie based on field of view
+function findClosestPlayer(zombie, players, map, checkMapCollisions) {
+  let closestPlayer = null;
+  let minDistance = Infinity;
+  let investigatePlayer = null;
+  let investigateDistance = Infinity;
+  let lastKnownPosition = null;
+  
+  // First check if we have a last known position to investigate
+  if (zombie.lastKnownPlayerPos && zombie.state === 'investigating_last_position') {
+    // Calculate distance to last known position
+    const dx = zombie.lastKnownPlayerPos.x - zombie.position.x;
+    const dz = zombie.lastKnownPlayerPos.z - zombie.position.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+    
+    // If we're close enough to the last known position, clear it
+    if (distance < 1.0) {
+      zombie.lastKnownPlayerPos = null;
+      zombie.investigationStartTime = null;
+    } else {
+      // Return the last known position as a special "player" for the zombie to move towards
+      return { 
+        player: { 
+          position: zombie.lastKnownPlayerPos,
+          id: 'last_position'
+        }, 
+        type: 'investigate_last_position' 
+      };
+    }
+  }
+  
+  for (const playerId in players) {
+    const player = players[playerId];
+    const dx = player.position.x - zombie.position.x;
+    const dz = player.position.z - zombie.position.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+    
+    // Is player already detected? Continue tracking if possible
+    if (zombie.target === player.id && distance < ZOMBIE_DETECTION_RANGE) {
+      // Check if we still have line of sight to the player
+      const canSeePlayer = hasLineOfSight(zombie.position, player.position, map, checkMapCollisions);
+      
+      // If we have line of sight or player is very close, maintain tracking
+      if (canSeePlayer || distance < ZOMBIE_ATTACK_RANGE * 1.5) {
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestPlayer = player;
+        }
+      } else {
+        // Lost visual contact with player - remember last known position
+        lastKnownPosition = { ...player.position };
+      }
+      continue;
+    }
+    
+    // Is player within attack range? Detect regardless of FOV
+    if (distance < ZOMBIE_ATTACK_RANGE) {
+      // Even at close range, check line of sight
+      if (hasLineOfSight(zombie.position, player.position, map, checkMapCollisions)) {
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestPlayer = player;
+        }
+      }
+      continue;
+    }
+    
+    if (distance <= ZOMBIE_SIGHT_RANGE) {
+      // Calculate angle between zombie's forward direction and direction to player
+      const zombieForwardX = Math.sin(zombie.rotation);
+      const zombieForwardZ = Math.cos(zombie.rotation);
+      
+      // Normalize the direction vector to the player
+      const dirLength = Math.sqrt(dx * dx + dz * dz);
+      const normalizedDirX = dx / dirLength;
+      const normalizedDirZ = dz / dirLength;
+      
+      // Calculate dot product (gives cosine of angle between vectors)
+      const dotProduct = zombieForwardX * normalizedDirX + zombieForwardZ * normalizedDirZ;
+      
+      // For direct sight - check within 90-degree cone of vision
+      const cosHalfAngle = Math.cos(ZOMBIE_SIGHT_ANGLE / 2);
+      
+      if (dotProduct > cosHalfAngle) {
+        // Check if there's a clear line of sight
+        if (hasLineOfSight(zombie.position, player.position, map, checkMapCollisions)) {
+          // Player is within zombie's field of vision, detection range, and line of sight
+          if (distance < minDistance) {
+            minDistance = distance;
+            closestPlayer = player;
+            // Clear investigating state if we can directly see the player
+            investigatePlayer = null;
+          }
+        }
+      }
+      // For wider awareness (hearing/peripheral vision) - check 180-degree area
+      else if (dotProduct > Math.cos(ZOMBIE_AWARENESS_ANGLE / 2)) {
+        // For peripheral vision, also check line of sight
+        if (hasLineOfSight(zombie.position, player.position, map, checkMapCollisions)) {
+          // If no direct visual target yet, and this player is closest for investigation
+          if (distance < investigateDistance) {
+            investigateDistance = distance;
+            investigatePlayer = player;
+          }
+        }
+      }
+    }
+  }
+  
+  // If we found a player to directly chase, return them
+  if (closestPlayer) {
+    return { player: closestPlayer, type: 'chase' };
+  }
+  
+  // If we lost track of our target, prioritize investigating the last known position
+  if (lastKnownPosition && zombie.target) {
+    return { 
+      player: { 
+        position: lastKnownPosition,
+        id: 'last_position'
+      }, 
+      type: 'investigate_last_position' 
+    };
+  }
+  
+  // If we found a player to investigate, return them with the investigate type
+  if (investigatePlayer) {
+    return { player: investigatePlayer, type: 'investigate' };
+  }
+  
+  // No player found
+  return { player: null, type: null };
 }
 
 // Function to initialize zombies for a room
 function initializeZombiesForRoom(room, checkMapCollisions) {
+  // Store the collision function in the room for later use
+  room.checkMapCollisions = checkMapCollisions;
+  
   room.zombies = []; // Initialize zombies array
   
   // Generate zombies for the room
@@ -105,13 +287,34 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
   // Skip rooms with no players
   if (Object.keys(room.players).length === 0) return;
   
+  const now = Date.now();
+  
   // Update each zombie
   for (let i = 0; i < room.zombies.length; i++) {
     const zombie = room.zombies[i];
     const previousState = zombie.state;
+    const previousIdleState = zombie.idleState;
     
-    // Find closest player
-    const targetPlayer = findClosestPlayer(zombie, room.players);
+    // Handle rising animation
+    if (zombie.state === 'rising') {
+      const elapsedTime = now - zombie.risingStartTime;
+      
+      // Calculate Y position based on elapsed time
+      const progress = Math.min(1.0, elapsedTime / zombie.risingDuration);
+      zombie.position.y = -0.8 + progress * 0.8; // Rise from -0.8 to 0
+      
+      // If rising animation is complete, transition to idle state
+      if (progress >= 1.0) {
+        zombie.state = 'idle';
+        zombie.position.y = 0; // Ensure position is exactly at ground level
+      }
+      
+      // Skip other behavior processing during rising
+      continue;
+    }
+    
+    // Find closest player (now using FOV-based detection with line of sight)
+    const { player: targetPlayer, type: detectionType } = findClosestPlayer(zombie, room.players, room.map, checkMapCollisions);
     
     if (targetPlayer) {
       // Calculate direction vector
@@ -119,98 +322,340 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
       const dz = targetPlayer.position.z - zombie.position.z;
       const distance = Math.sqrt(dx * dx + dz * dz);
       
-      // Update zombie rotation to face player
-      zombie.rotation = Math.atan2(dx, dz);
+      // Only update rotation to face target direction if chase or attack (NOT for investigate)
+      if (detectionType === 'chase') {
+        zombie.rotation = Math.atan2(dx, dz);
+      }
       
-      // Check if close enough to attack
-      if (distance < ZOMBIE_ATTACK_RANGE) {
-        // We have a target - but we're in attack range so we stop to attack
+      if (detectionType === 'chase') {
+        // Remember we're chasing a real player
         zombie.target = targetPlayer.id;
-        zombie.state = 'attacking';
         
-        // Attack player every second
-        const now = Date.now();
-        if (now - zombie.lastAttack > 1000) { // 1 second cooldown
-          zombie.lastAttack = now;
+        // Check if close enough to attack
+        if (distance < ZOMBIE_ATTACK_RANGE) {
+          // We have a target - but we're in attack range so we stop to attack
+          zombie.target = targetPlayer.id;
+          zombie.state = 'attacking';
           
-          // Deal damage to player
-          targetPlayer.health -= ZOMBIE_DAMAGE;
+          // Set rotation directly for attacks
+          zombie.rotation = Math.atan2(dx, dz);
           
-          // Notify players about the hit
-          io.to(room.id).emit('playerHit', {
-            playerId: targetPlayer.id,
-            health: targetPlayer.health
-          });
+          // Attack player every second
+          if (now - zombie.lastAttack > 1000) { // 1 second cooldown
+            zombie.lastAttack = now;
+            
+            // Deal damage to player
+            targetPlayer.health -= ZOMBIE_DAMAGE;
+            
+            // Notify players about the hit
+            io.to(room.id).emit('playerHit', {
+              playerId: targetPlayer.id,
+              health: targetPlayer.health
+            });
+          }
+        } else if (distance < ZOMBIE_DETECTION_RANGE) {
+          // We are in range but not close enough to attack - chase the player
+          zombie.state = 'chasing';
+          zombie.awarenessTarget = null; // Clear any investigation target
+          
+          // Move towards player
+          const moveSpeed = zombie.speed;
+          const normalizedX = dx / distance;
+          const normalizedZ = dz / distance;
+          
+          // Store previous position
+          const prevPosition = { ...zombie.position };
+          
+          // Update position
+          zombie.position.x += normalizedX * moveSpeed;
+          zombie.position.z += normalizedZ * moveSpeed;
+          
+          // Check map boundaries
+          if (!isWithinMapBoundaries(zombie.position)) {
+            zombie.position = clampToMapBoundaries(zombie.position);
+          }
+          
+          // Check for collisions with map elements
+          const collisionResult = checkZombieMapCollisions(zombie, room.map, checkMapCollisions);
+          if (collisionResult.collision) {
+            // Use adjusted position from collision response
+            zombie.position = collisionResult.position;
+          }
+          
+          // Check for collisions with players
+          let playerCollision = false;
+          for (const playerId in room.players) {
+            if (checkZombiePlayerCollision(zombie, room.players[playerId])) {
+              playerCollision = true;
+              break;
+            }
+          }
+          
+          // Check for collisions with other zombies
+          let zombieCollision = false;
+          for (let j = 0; j < room.zombies.length; j++) {
+            if (i !== j && checkZombieZombieCollision(zombie, room.zombies[j])) {
+              zombieCollision = true;
+              break;
+            }
+          }
+          
+          // If collision detected with players or zombies, revert to previous position
+          if (playerCollision || zombieCollision) {
+            zombie.position = prevPosition;
+          }
+        } else {
+          // Target is too far away - go back to idle
+          zombie.state = 'idle';
+          zombie.target = null;
+          zombie.awarenessTarget = null;
         }
-      } else if (distance < ZOMBIE_DETECTION_RANGE) {
-        // We are in range but not close enough to attack - chase the player
-        zombie.target = targetPlayer.id;
-        zombie.state = 'chasing';
+      } else if (detectionType === 'investigate_last_position') {
+        // We're investigating the last known position of a player we lost sight of
+        zombie.state = 'investigating_last_position';
         
-        // Move towards player
-        const moveSpeed = zombie.speed;
-        const normalizedX = dx / distance;
-        const normalizedZ = dz / distance;
-        
-        // Store previous position
-        const prevPosition = { ...zombie.position };
-        
-        // Update position
-        zombie.position.x += normalizedX * moveSpeed;
-        zombie.position.z += normalizedZ * moveSpeed;
-        
-        // Check map boundaries
-        if (!isWithinMapBoundaries(zombie.position)) {
-          zombie.position = clampToMapBoundaries(zombie.position);
+        // If we don't have an investigation start time, set one
+        if (!zombie.investigationStartTime) {
+          zombie.investigationStartTime = now;
+          zombie.lastKnownPlayerPos = targetPlayer.position;
         }
         
-        // Check for collisions with map elements
-        const collisionResult = checkZombieMapCollisions(zombie, room.map, checkMapCollisions);
-        if (collisionResult.collision) {
-          // Use adjusted position from collision response
-          zombie.position = collisionResult.position;
-        }
-        
-        // Check for collisions with players
-        let playerCollision = false;
-        for (const playerId in room.players) {
-          if (checkZombiePlayerCollision(zombie, room.players[playerId])) {
-            playerCollision = true;
-            break;
+        // Check if we've been investigating too long (10 seconds max)
+        if (now - zombie.investigationStartTime > 10000) {
+          // Give up investigation
+          zombie.state = 'idle';
+          zombie.lastKnownPlayerPos = null;
+          zombie.investigationStartTime = null;
+          zombie.target = null;
+        } else {
+          // Move toward the last known position
+          const moveSpeed = zombie.speed * 0.7; // Slightly slower when investigating
+          const normalizedX = dx / distance;
+          const normalizedZ = dz / distance;
+          
+          // Store previous position
+          const prevPosition = { ...zombie.position };
+          
+          // Update position
+          zombie.position.x += normalizedX * moveSpeed;
+          zombie.position.z += normalizedZ * moveSpeed;
+          
+          // Check for collisions and adjust position
+          if (!isWithinMapBoundaries(zombie.position)) {
+            zombie.position = clampToMapBoundaries(zombie.position);
+          }
+          
+          // Check for collisions with map elements
+          const collisionResult = checkZombieMapCollisions(zombie, room.map, checkMapCollisions);
+          if (collisionResult.collision) {
+            zombie.position = collisionResult.position;
+          }
+          
+          // Check for collisions with players
+          let playerCollision = false;
+          for (const playerId in room.players) {
+            if (checkZombiePlayerCollision(zombie, room.players[playerId])) {
+              playerCollision = true;
+              break;
+            }
+          }
+          
+          // Check for collisions with other zombies
+          let zombieCollision = false;
+          for (let j = 0; j < room.zombies.length; j++) {
+            if (i !== j && checkZombieZombieCollision(zombie, room.zombies[j])) {
+              zombieCollision = true;
+              break;
+            }
+          }
+          
+          // If collision detected with players or zombies, revert to previous position
+          if (playerCollision || zombieCollision) {
+            zombie.position = prevPosition;
+          }
+          
+          // Occasionally look around while investigating
+          if (Math.random() < 0.05) {
+            // Slightly adjust rotation to "look around"
+            zombie.rotation += (Math.random() - 0.5) * 0.5;
           }
         }
+      } else if (detectionType === 'investigate') {
+        // Player detected in awareness range but not in direct sight
+        // Don't immediately chase - turn to investigate
+        zombie.state = 'investigating';
+        zombie.awarenessTarget = targetPlayer.id;
+        zombie.target = null; // Ensure no chase target is set
         
-        // Check for collisions with other zombies
-        let zombieCollision = false;
-        for (let j = 0; j < room.zombies.length; j++) {
-          if (i !== j && checkZombieZombieCollision(zombie, room.zombies[j])) {
-            zombieCollision = true;
-            break;
+        // Calculate target rotation to face the player
+        const targetRotation = Math.atan2(dx, dz);
+        
+        // Turn gradually toward the player
+        // Handle the case where we need to cross the 0/2π boundary
+        let rotationDiff = targetRotation - zombie.rotation;
+        
+        // Normalize the difference to be between -π and π
+        if (rotationDiff > Math.PI) rotationDiff -= 2 * Math.PI;
+        if (rotationDiff < -Math.PI) rotationDiff += 2 * Math.PI;
+        
+        // Apply turn with limited speed
+        if (Math.abs(rotationDiff) > 0.05) { // Small threshold to avoid jittering
+          zombie.rotation += Math.sign(rotationDiff) * Math.min(ZOMBIE_TURN_SPEED, Math.abs(rotationDiff));
+          
+          // Normalize rotation to be between 0 and 2π
+          if (zombie.rotation < 0) zombie.rotation += 2 * Math.PI;
+          if (zombie.rotation > 2 * Math.PI) zombie.rotation -= 2 * Math.PI;
+          
+          // During turning, don't move at all
+        } else {
+          // Once facing the right direction, check if player is now in direct sight cone
+          // Recalculate whether the player is now in the direct line of sight
+          const zombieForwardX = Math.sin(zombie.rotation);
+          const zombieForwardZ = Math.cos(zombie.rotation);
+          const normalizedDirX = dx / distance;
+          const normalizedDirZ = dz / distance;
+          const dotProduct = zombieForwardX * normalizedDirX + zombieForwardZ * normalizedDirZ;
+          const cosHalfAngle = Math.cos(ZOMBIE_SIGHT_ANGLE / 2);
+          
+          // If they're now in our direct sight cone AND we can see them, switch to chase
+          // otherwise continue investigating
+          if (dotProduct > cosHalfAngle && 
+              hasLineOfSight(zombie.position, targetPlayer.position, room.map, checkMapCollisions)) {
+            // Now we can see them directly - next update will chase
+            // Don't immediately set chase state - let the detection phase handle it
+          } else {
+            // Still can't directly see them - investigate by moving slowly forward
+            const moveSpeed = zombie.speed * 0.4; // Slower than chase
+            const zombieForwardX = Math.sin(zombie.rotation);
+            const zombieForwardZ = Math.cos(zombie.rotation);
+            
+            // Store previous position
+            const prevPosition = { ...zombie.position };
+            
+            // Move forward in the direction we're facing
+            zombie.position.x += zombieForwardX * moveSpeed;
+            zombie.position.z += zombieForwardZ * moveSpeed;
+            
+            // Check map boundaries
+            if (!isWithinMapBoundaries(zombie.position)) {
+              zombie.position = clampToMapBoundaries(zombie.position);
+            }
+            
+            // Check for collisions with map elements
+            const collisionResult = checkZombieMapCollisions(zombie, room.map, checkMapCollisions);
+            if (collisionResult.collision) {
+              zombie.position = collisionResult.position;
+            }
+            
+            // Check for collisions and revert if needed
+            let hasCollision = false;
+            
+            // Check for collisions with players
+            for (const playerId in room.players) {
+              if (checkZombiePlayerCollision(zombie, room.players[playerId])) {
+                hasCollision = true;
+                break;
+              }
+            }
+            
+            // Check for collisions with other zombies
+            if (!hasCollision) {
+              for (let j = 0; j < room.zombies.length; j++) {
+                if (i !== j && checkZombieZombieCollision(zombie, room.zombies[j])) {
+                  hasCollision = true;
+                  break;
+                }
+              }
+            }
+            
+            // If collision detected, revert to previous position
+            if (hasCollision) {
+              zombie.position = prevPosition;
+            }
+            
+            // Occasionally pause while investigating
+            if (Math.random() < 0.05) {
+              // Small chance to look around slightly when investigating
+              zombie.rotation += (Math.random() - 0.5) * 0.2;
+            }
           }
         }
-        
-        // If collision detected with players or zombies, revert to previous position
-        if (playerCollision || zombieCollision) {
-          zombie.position = prevPosition;
-        }
-      } else {
-        // Target is too far away - go back to idle
-        zombie.state = 'idle';
-        zombie.target = null;
       }
     } else {
       // No players in range - idle behavior
       zombie.state = 'idle';
       zombie.target = null;
+      zombie.awarenessTarget = null;
+      zombie.lastKnownPlayerPos = null;
+      zombie.investigationStartTime = null;
       
-      // Occasionally change rotation when idle
-      if (Math.random() < 0.02) { // 2% chance each update
-        zombie.rotation = Math.random() * Math.PI * 2;
+      // Check if it's time to transition to a new idle state
+      if (now - zombie.idleStateStartTime > zombie.idleStateDuration) {
+        // Choose a new idle state (different from current)
+        const availableIdleStates = IDLE_STATES.filter(state => state !== zombie.idleState);
+        zombie.idleState = availableIdleStates[Math.floor(Math.random() * availableIdleStates.length)];
+        zombie.idleStateStartTime = now;
+        zombie.idleStateDuration = IDLE_MIN_DURATION + Math.random() * (IDLE_MAX_DURATION - IDLE_MIN_DURATION);
+      }
+      
+      // Handle idle behavior based on current idle state
+      switch (zombie.idleState) {
+        case 'standing':
+          // Do nothing, zombie stands still
+          break;
+          
+        case 'turning':
+          // Slowly turn in place
+          zombie.rotation += IDLE_TURN_SPEED;
+          if (zombie.rotation > Math.PI * 2) {
+            zombie.rotation -= Math.PI * 2;
+          }
+          break;
+          
+        case 'wandering':
+          // Move slowly in current direction
+          // Store previous position
+          const prevPosition = { ...zombie.position };
+          
+          // Calculate direction vector from rotation
+          const dirX = Math.sin(zombie.rotation);
+          const dirZ = Math.cos(zombie.rotation);
+          
+          // Update position
+          zombie.position.x += dirX * IDLE_WALK_SPEED;
+          zombie.position.z += dirZ * IDLE_WALK_SPEED;
+          
+          // Check map boundaries
+          if (!isWithinMapBoundaries(zombie.position)) {
+            zombie.position = clampToMapBoundaries(zombie.position);
+            // Change direction when hitting boundary
+            zombie.rotation = Math.random() * Math.PI * 2;
+          }
+          
+          // Check for collisions with map elements
+          const collisionResult = checkZombieMapCollisions(zombie, room.map, checkMapCollisions);
+          if (collisionResult.collision) {
+            // Use adjusted position from collision response
+            zombie.position = collisionResult.position;
+            // Change direction when hitting an obstacle
+            zombie.rotation = Math.random() * Math.PI * 2;
+          }
+          
+          // Check for collisions with other zombies
+          for (let j = 0; j < room.zombies.length; j++) {
+            if (i !== j && checkZombieZombieCollision(zombie, room.zombies[j])) {
+              zombie.position = prevPosition;
+              // Change direction when colliding with another zombie
+              zombie.rotation = Math.random() * Math.PI * 2;
+              break;
+            }
+          }
+          break;
       }
     }
     
-    // If state changed, ensure it gets sent to clients
-    if (previousState !== zombie.state) {
+    // If state or idle state changed, ensure it gets sent to clients
+    if (previousState !== zombie.state || previousIdleState !== zombie.idleState) {
       // State change gets sent automatically in zombiesUpdate broadcast
     }
   }
@@ -239,9 +684,8 @@ function handleZombieHit(zombie, room, io, damage = 10) {
       // Spawn a new zombie after some delay
       setTimeout(() => {
         if (room) { // Make sure room still exists
-          const newZombie = createZombie(room.map.size || 50);
-          room.zombies.push(newZombie);
-          io.to(room.id).emit('zombieCreated', newZombie);
+          // Use the collision function stored in the room object
+          spawnNewZombie(room, io, room.checkMapCollisions);
         }
       }, 5000);
       
@@ -258,6 +702,83 @@ function handleZombieHit(zombie, room, io, damage = 10) {
   }
 }
 
+// Function to spawn a new zombie at a valid position
+function spawnNewZombie(room, io, checkMapCollisions) {
+  // Maximum attempts to find a valid spawn position
+  const MAX_SPAWN_ATTEMPTS = 50;
+  
+  for (let attempt = 0; attempt < MAX_SPAWN_ATTEMPTS; attempt++) {
+    // Create a new zombie with random position
+    const newZombie = createZombie(room.map.size || 50);
+    
+    // Check if position is valid (no collisions with map elements)
+    // We need to temporarily set y to 0 for collision check, then restore to -0.8 for rising animation
+    const tempY = newZombie.position.y;
+    newZombie.position.y = 0;
+    
+    const collisionResult = checkZombieMapCollisions(newZombie, room.map, checkMapCollisions);
+    
+    // Restore Y position for rising animation
+    newZombie.position.y = tempY;
+    
+    // Skip if collision detected
+    if (collisionResult.collision) {
+      continue; // Try again with a new position
+    }
+    
+    // Check for collisions with other zombies
+    let zombieCollision = false;
+    for (let i = 0; i < room.zombies.length; i++) {
+      if (checkZombieZombieCollision(newZombie, room.zombies[i])) {
+        zombieCollision = true;
+        break;
+      }
+    }
+    
+    if (zombieCollision) {
+      continue; // Try again with a new position
+    }
+    
+    // Check if too close to players (avoid spawning right next to players)
+    let tooCloseToPlayer = false;
+    const MIN_PLAYER_DISTANCE = 10; // Minimum distance from players to spawn
+    
+    for (const playerId in room.players) {
+      const player = room.players[playerId];
+      const dx = newZombie.position.x - player.position.x;
+      const dz = newZombie.position.z - player.position.z;
+      const distance = Math.sqrt(dx * dx + dz * dz);
+      
+      if (distance < MIN_PLAYER_DISTANCE) {
+        tooCloseToPlayer = true;
+        break;
+      }
+    }
+    
+    if (tooCloseToPlayer) {
+      continue; // Try again with a new position
+    }
+    
+    // If we got here, position is valid - add the zombie to the room
+    room.zombies.push(newZombie);
+    
+    // Notify players about new zombie
+    io.to(room.id).emit('zombieCreated', newZombie);
+    
+    return newZombie; // Successfully spawned
+  }
+  
+  // If we get here, we couldn't find a valid position after MAX_SPAWN_ATTEMPTS
+  console.log('Failed to find valid position for new zombie after', MAX_SPAWN_ATTEMPTS, 'attempts');
+  
+  // Fall back to just adding the zombie at a random position without checks
+  const fallbackZombie = createZombie(room.map.size || 50);
+  room.zombies.push(fallbackZombie);
+  io.to(room.id).emit('zombieCreated', fallbackZombie);
+  
+  return fallbackZombie;
+}
+
 module.exports = {
   MAX_ZOMBIES,
   ZOMBIE_SPEED,
@@ -266,7 +787,12 @@ module.exports = {
   ZOMBIE_UPDATE_INTERVAL,
   ZOMBIE_ATTACK_RANGE,
   ZOMBIE_DETECTION_RANGE,
+  ZOMBIE_SIGHT_RANGE,
+  ZOMBIE_SIGHT_ANGLE,
+  ZOMBIE_AWARENESS_ANGLE,
+  ZOMBIE_TURN_SPEED,
   ZOMBIE_COLLISION_RADIUS,
+  IDLE_STATES,
   createZombie,
   checkZombieMapCollisions,
   checkZombiePlayerCollision,
@@ -274,5 +800,7 @@ module.exports = {
   findClosestPlayer,
   initializeZombiesForRoom,
   updateZombies,
-  handleZombieHit
+  handleZombieHit,
+  spawnNewZombie,
+  hasLineOfSight
 };

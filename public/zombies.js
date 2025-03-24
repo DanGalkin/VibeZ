@@ -104,7 +104,7 @@ export function createZombieMesh(zombie) {
   // Position the zombie
   zombieGroup.position.set(
     zombie.position.x,
-    zombie.position.y,
+    zombie.position.y, // Use the server-provided Y position for rising animation
     zombie.position.z
   );
   
@@ -117,10 +117,68 @@ export function createZombieMesh(zombie) {
     animationTime: Math.random() * 100, // Random start phase
     walkSpeed: 3 + Math.random() * 2, // Slightly randomized walk speed
     state: zombie.state || 'idle',
-    isMoving: zombie.state === 'chasing' // Only animate when chasing
+    isMoving: zombie.state === 'chasing', // Only animate when chasing
+    risingStartTime: zombie.state === 'rising' ? Date.now() : null
   };
   
+  // Add dirt particle effect for rising zombies
+  if (zombie.state === 'rising') {
+    addRisingEffect(zombieGroup);
+  }
+  
   return zombieGroup;
+}
+
+// Function to add dirt particle effect when zombie rises from ground
+function addRisingEffect(zombieGroup) {
+  // Create a simple particle system for dirt/soil effect
+  const particleCount = 20;
+  const particles = new THREE.Group();
+  
+  // Create individual dirt particles
+  for (let i = 0; i < particleCount; i++) {
+    // Simple brown cube for dirt particles
+    const size = 0.05 + Math.random() * 0.1;
+    const geometry = new THREE.BoxGeometry(size, size, size);
+    const material = new THREE.MeshBasicMaterial({ 
+      color: 0x8B4513, // Brown dirt color
+      transparent: true,
+      opacity: 0.8 
+    });
+    
+    const particle = new THREE.Mesh(geometry, material);
+    
+    // Random position around the zombie's feet
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 0.3 + Math.random() * 0.3;
+    particle.position.set(
+      Math.cos(angle) * radius,
+      -0.4 + Math.random() * 0.2, // Near ground level
+      Math.sin(angle) * radius
+    );
+    
+    // Store velocity for animation
+    particle.userData = {
+      velocity: {
+        x: (Math.random() - 0.5) * 0.02,
+        y: 0.01 + Math.random() * 0.02,
+        z: (Math.random() - 0.5) * 0.02
+      },
+      rotation: {
+        x: (Math.random() - 0.5) * 0.1,
+        y: (Math.random() - 0.5) * 0.1,
+        z: (Math.random() - 0.5) * 0.1
+      },
+      lifetime: 1 + Math.random() * 0.5, // Seconds
+      age: 0
+    };
+    
+    particles.add(particle);
+  }
+  
+  // Add particles group to the zombie
+  zombieGroup.add(particles);
+  zombieGroup.userData.particles = particles;
 }
 
 // Animate zombies
@@ -129,8 +187,74 @@ export function animateZombies(zombies, deltaTime) {
     const zombie = zombies[id];
     if (!zombie.mesh || !zombie.mesh.userData) continue;
     
-    // Update moving state based on zombie state
-    zombie.mesh.userData.isMoving = zombie.data.state === 'chasing';
+    // Update position from server data
+    zombie.mesh.position.set(
+      zombie.data.position.x,
+      zombie.data.position.y,
+      zombie.data.position.z
+    );
+    
+    // Update rotation from server data
+    zombie.mesh.rotation.y = zombie.data.rotation;
+    
+    // Update state from server data
+    if (zombie.mesh.userData.state !== zombie.data.state) {
+      zombie.mesh.userData.state = zombie.data.state;
+      
+      // If transitioning into rising state, add the effect
+      if (zombie.data.state === 'rising' && !zombie.mesh.userData.risingStartTime) {
+        zombie.mesh.userData.risingStartTime = Date.now();
+        addRisingEffect(zombie.mesh);
+      }
+    }
+    
+    // Handle rising animation particles
+    if (zombie.mesh.userData.particles) {
+      const particles = zombie.mesh.userData.particles;
+      let allParticlesDone = true;
+      
+      // Update each particle
+      for (let i = 0; i < particles.children.length; i++) {
+        const particle = particles.children[i];
+        const data = particle.userData;
+        
+        // Update age
+        data.age += deltaTime;
+        
+        if (data.age < data.lifetime) {
+          allParticlesDone = false;
+          
+          // Update particle position
+          particle.position.x += data.velocity.x;
+          particle.position.y += data.velocity.y;
+          particle.position.z += data.velocity.z;
+          
+          // Update rotation
+          particle.rotation.x += data.rotation.x;
+          particle.rotation.y += data.rotation.y;
+          particle.rotation.z += data.rotation.z;
+          
+          // Update opacity based on lifetime
+          const progress = data.age / data.lifetime;
+          particle.material.opacity = 0.8 * (1 - progress);
+        } else {
+          // Hide completed particles
+          particle.visible = false;
+        }
+      }
+      
+      // Remove particles system after all particles are done
+      if (allParticlesDone) {
+        zombie.mesh.remove(particles);
+        zombie.mesh.userData.particles = null;
+      }
+    }
+    
+    // Update moving state based on zombie state - also animate when wandering in idle
+    zombie.mesh.userData.isMoving = 
+      zombie.data.state === 'chasing' || 
+      zombie.data.state === 'investigating_last_position' ||
+      (zombie.data.state === 'idle' && zombie.data.idleState === 'wandering');
     
     // Find limbs - different structure now with shoulder groups
     const leftShoulder = zombie.mesh.children[2]; // Left shoulder group
@@ -140,25 +264,50 @@ export function animateZombies(zombies, deltaTime) {
     
     if (!leftShoulder || !rightShoulder || !leftLeg || !rightLeg) continue;
     
-    // Only animate if the zombie is moving (chasing state)
+    // Special animation for rising state
+    if (zombie.data.state === 'rising') {
+      // Arms reaching up during rising animation
+      leftShoulder.rotation.x = -Math.PI / 2; // Arms reaching straight up
+      rightShoulder.rotation.x = -Math.PI / 2;
+      
+      leftShoulder.rotation.z = Math.PI / 12;
+      rightShoulder.rotation.z = -Math.PI / 12;
+      
+      // Legs slightly bent forward
+      leftLeg.rotation.x = 0.3;
+      rightLeg.rotation.x = 0.3;
+      
+      continue; // Skip other animations during rising
+    }
+    
+    // Only animate if the zombie is moving (chasing state or wandering idle)
     if (zombie.mesh.userData.isMoving) {
       // Update animation time
       zombie.mesh.userData.animationTime += deltaTime * zombie.mesh.userData.walkSpeed;
       
+      // Different animation speeds based on state
+      let animationMultiplier = 0.5; // Default slower animation
+      
+      if (zombie.data.state === 'chasing') {
+        animationMultiplier = 1.0; // Full speed for chasing
+      } else if (zombie.data.state === 'investigating_last_position') {
+        animationMultiplier = 0.7; // Medium speed for investigating last position
+      }
+      
       // Zombie animation is more shuffling/staggered than player animation
-      const swingBase = Math.sin(zombie.mesh.userData.animationTime) * 0.25;
+      const swingBase = Math.sin(zombie.mesh.userData.animationTime) * 0.25 * animationMultiplier;
       
       // Subtle arm swaying - primarily in the forward direction
       // with very limited side-to-side movement
-      const armSwing = Math.sin(zombie.mesh.userData.animationTime * 1.3) * 0.1;
+      const armSwing = Math.sin(zombie.mesh.userData.animationTime * 1.3) * 0.1 * animationMultiplier;
       
       // Animate shoulders for proper arm movement - using negative values for forward reach
       leftShoulder.rotation.x = -Math.PI / 3 + armSwing; // CHANGED to negative for forward extension
       rightShoulder.rotation.x = -Math.PI / 3 - armSwing; // CHANGED to negative for forward extension
       
       // Very subtle side-to-side movement
-      leftShoulder.rotation.z = Math.PI / 12 + Math.cos(zombie.mesh.userData.animationTime) * 0.03;
-      rightShoulder.rotation.z = -Math.PI / 12 - Math.cos(zombie.mesh.userData.animationTime) * 0.03;
+      leftShoulder.rotation.z = Math.PI / 12 + Math.cos(zombie.mesh.userData.animationTime) * 0.03 * animationMultiplier;
+      rightShoulder.rotation.z = -Math.PI / 12 - Math.cos(zombie.mesh.userData.animationTime) * 0.03 * animationMultiplier;
       
       // Legs move in shuffling motion
       leftLeg.rotation.x = swingBase;
@@ -176,6 +325,51 @@ export function animateZombies(zombies, deltaTime) {
       // Reset legs
       leftLeg.rotation.x = 0;
       rightLeg.rotation.x = 0;
+      
+      // For turning idle state, add subtle rotation
+      if (zombie.data.state === 'idle' && zombie.data.idleState === 'turning') {
+        // Subtle body sway for turning zombies
+        const turnTime = Date.now() % 2000 / 2000; // 2-second cycle
+        const turnSway = Math.sin(turnTime * Math.PI * 2) * 0.05;
+        
+        leftShoulder.rotation.z = Math.PI / 12 + turnSway;
+        rightShoulder.rotation.z = -Math.PI / 12 - turnSway;
+      }
+      
+      // For investigating state, add subtle "alert" animations - head and arm movement
+      if (zombie.data.state === 'investigating') {
+        // More pronounced movement for investigating - zombie is alert
+        const investigateTime = Date.now() % 1500 / 1500; // 1.5-second cycle
+        const investigateSway = Math.sin(investigateTime * Math.PI * 2) * 0.1;
+        
+        // More pronounced arm movement - zombie is alert and reaching
+        leftShoulder.rotation.x = -Math.PI / 3 + investigateSway * 0.5;
+        rightShoulder.rotation.x = -Math.PI / 3 - investigateSway * 0.5;
+        
+        // Slightly different side-to-side arm movement
+        leftShoulder.rotation.z = Math.PI / 12 + investigateSway * 0.3;
+        rightShoulder.rotation.z = -Math.PI / 12 - investigateSway * 0.3;
+      }
+      
+      // For investigating_last_position state with special "looking around" animation
+      if (zombie.data.state === 'investigating_last_position') {
+        // Head movement to simulate looking around
+        const lookTime = Date.now() % 3000 / 3000; // 3-second cycle
+        const lookPhase = Math.sin(lookTime * Math.PI * 2);
+        
+        // Move head slightly to simulate looking around
+        if (zombie.mesh.children[1]) { // Head is typically the second child
+          zombie.mesh.children[1].rotation.y = lookPhase * 0.3;
+        }
+        
+        // Subtle arm movement for searching behavior
+        leftShoulder.rotation.x = -Math.PI / 3 - 0.2;
+        rightShoulder.rotation.x = -Math.PI / 3 + 0.2;
+        
+        // Slightly different side-to-side arm movement
+        leftShoulder.rotation.z = Math.PI / 12 + lookPhase * 0.1;
+        rightShoulder.rotation.z = -Math.PI / 12 - lookPhase * 0.1;
+      }
       
       // For attacking state, we could add special animation here
       if (zombie.data.state === 'attacking') {

@@ -429,6 +429,24 @@ io.on('connection', (socket) => {
       io.emit('roomsUpdated');
     }
   });
+
+  // Update the code where handleZombieHit is called
+  // Find the section handling projectile hits on zombies, likely in a socket event handler:
+
+  socket.on('projectileHit', (data) => {
+    const room = rooms[socket.roomId];
+    if (!room) return;
+    
+    if (data.type === 'zombie' && data.targetId) {
+      const zombie = room.zombies.find(z => z.id === data.targetId);
+      if (zombie) {
+        // Pass the checkMapCollisions function as the fifth parameter
+        const destroyed = zombieLogic.handleZombieHit(zombie, room, io, 10, checkMapCollisions);
+        // ...existing code...
+      }
+    }
+    // ...existing code...
+  });
 });
 
 // Game loop (runs at 60 FPS)
