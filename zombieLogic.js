@@ -141,6 +141,9 @@ function findClosestPlayer(zombie, players, map, checkMapCollisions) {
     if (distance < 1.0) {
       zombie.lastKnownPlayerPos = null;
       zombie.investigationStartTime = null;
+      // Transition to idle state once we've reached the investigation point
+      zombie.state = 'idle';
+      return { player: null, type: null };
     } else {
       // Return the last known position as a special "player" for the zombie to move towards
       return { 
@@ -172,7 +175,18 @@ function findClosestPlayer(zombie, players, map, checkMapCollisions) {
         }
       } else {
         // Lost visual contact with player - remember last known position
-        lastKnownPosition = { ...player.position };
+        zombie.lastKnownPlayerPos = { ...player.position };
+        zombie.investigationStartTime = Date.now();
+        zombie.state = 'investigating_last_position';
+        
+        // Return immediately to start investigating
+        return { 
+          player: { 
+            position: zombie.lastKnownPlayerPos,
+            id: 'last_position'
+          }, 
+          type: 'investigate_last_position' 
+        };
       }
       continue;
     }
