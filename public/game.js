@@ -11,10 +11,16 @@ let scene, camera, renderer;
 let players = {};
 let projectiles = {};
 let zombies = {}; // Add zombies object
+let ammoPickups = {}; // Add ammo pickups object
 let localPlayer = null;
 let roomId = null;
 let mapContainer = null;
 let mapBoundaries = null; // Add reference to map boundaries visualization
+
+// Add ammo tracking variables
+let playerAmmo = 7; // Default starting ammo
+let currentWeapon = 'pistol'; // Default weapon
+let canFire = true; // Flag to prevent multiple shots while waiting for server response
 
 // Constants
 const MAP_SIZE = 50; // Should match server-side MAP_SIZE
@@ -192,6 +198,8 @@ function setupControls() {
         keys.right = true;
         break;
     }
+    
+    // Remove reload key handler
   });
   
   document.addEventListener('keyup', (event) => {
@@ -234,8 +242,16 @@ function setupControls() {
   document.addEventListener('click', (event) => {
     if (!gameActive || !localPlayer) return;
     
-    // We already have the mouse position from mousemove events
-    // Use groundMousePosition for shooting direction
+    // IMPORTANT: Check local ammo count before sending shoot event
+    if (playerAmmo <= 0 || !canFire) {
+      // Show visual feedback that player is out of ammo
+      console.log('Cannot shoot: Out of ammo or waiting for server response');
+      showAmmoWarning();
+      return;
+    }
+    
+    // Set canFire to false until we get server response
+    canFire = false;
     
     // Calculate direction from player to target
     const direction = new THREE.Vector3()
@@ -256,23 +272,44 @@ function setupControls() {
       }
     });
     
-    // Client-side prediction - create projectile immediately
-    createProjectile({
-      id: 'temp-' + Date.now(),
-      ownerId: socket.id,
-      position: {
-        x: localPlayer.position.x,
-        y: 0.5,
-        z: localPlayer.position.z
-      },
-      direction: {
-        x: direction.x,
-        y: 0,
-        z: direction.z
-      },
-      speed: 0.5
-    });
+    // We no longer create projectile immediately - rely on server confirmation
+    // The server will emit projectileCreated after validating ammo
+    
+    // Decrement local ammo as prediction (will be corrected by server if needed)
+    updateAmmoDisplay(playerAmmo - 1);
   });
+}
+
+// Show a visual warning when player is out of ammo
+function showAmmoWarning() {
+  const ammoDisplay = document.getElementById('ammo-display');
+  if (ammoDisplay) {
+    ammoDisplay.classList.add('warning');
+    setTimeout(() => {
+      ammoDisplay.classList.remove('warning');
+    }, 500);
+  }
+}
+
+// Update the ammo display
+function updateAmmoDisplay(ammo) {
+  playerAmmo = ammo;
+  const ammoDisplay = document.getElementById('ammo-display');
+  if (ammoDisplay) {
+    ammoDisplay.innerText = `${playerAmmo}`;
+    
+    // Visual cue for low ammo
+    if (playerAmmo <= 0) {
+      ammoDisplay.classList.add('no-ammo');
+      ammoDisplay.classList.remove('low-ammo');
+    } else if (playerAmmo <= 2) {
+      ammoDisplay.classList.add('low-ammo');
+      ammoDisplay.classList.remove('no-ammo');
+    } else {
+      ammoDisplay.classList.remove('low-ammo');
+      ammoDisplay.classList.remove('no-ammo');
+    }
+  }
 }
 
 // Calculate the intersection of mouse pointer with the ground plane
@@ -663,6 +700,91 @@ function resetPlayerLimbs(playerMesh) {
   });
 }
 
+// Create a ammo pickup mesh
+function createAmmoPickupMesh(pickup) {
+  const pickupGroup = new THREE.Group();
+  
+  // Create box for the ammo box
+  const boxGeometry = new THREE.BoxGeometry(0.6, 0.4, 0.3);
+  const boxMaterial = new THREE.MeshStandardMaterial({ 
+    color: 0x8B4513, // Brown box
+    roughness: 0.7, 
+    metalness: 0.1 
+  });
+  const box = new THREE.Mesh(boxGeometry, boxMaterial);
+  pickupGroup.add(box);
+  
+  // Add lid with slightly different color
+  const lidGeometry = new THREE.BoxGeometry(0.7, 0.1, 0.35);
+  const lidMaterial = new THREE.MeshStandardMaterial({ 
+    color: 0x654321, // Darker brown
+    roughness: 0.6, 
+    metalness: 0.2 
+  });
+  const lid = new THREE.Mesh(lidGeometry, lidMaterial);
+  lid.position.y = 0.25; // Position on top of the box
+  pickupGroup.add(lid);
+  
+  // Add bullet icon
+  const bulletGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.2, 8);
+  const bulletMaterial = new THREE.MeshStandardMaterial({ 
+    color: 0xFFD700, // Gold
+    roughness: 0.3, 
+    metalness: 0.8 
+  });
+  const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
+  bullet.position.set(0, 0.4, 0);
+  bullet.rotation.x = Math.PI / 2;
+  pickupGroup.add(bullet);
+  
+  // Add floating animation
+  pickupGroup.userData = {
+    floatHeight: 0.5,
+    floatSpeed: 1.5,
+    rotateSpeed: 0.5,
+    initialY: pickup.position.y,
+    timeOffset: Math.random() * Math.PI * 2
+  };
+  
+  // Position the pickup
+  pickupGroup.position.set(
+    pickup.position.x,
+    pickup.position.y,
+    pickup.position.z
+  );
+  
+  // Add to scene
+  scene.add(pickupGroup);
+  
+  return pickupGroup;
+}
+
+// Remove an ammo pickup
+function removeAmmoPickup(pickupId) {
+  if (ammoPickups[pickupId]) {
+    scene.remove(ammoPickups[pickupId].mesh);
+    delete ammoPickups[pickupId];
+  }
+}
+
+// Animate ammo pickups (floating and rotation)
+function animateAmmoPickups(deltaTime) {
+  for (const id in ammoPickups) {
+    const pickup = ammoPickups[id];
+    if (!pickup.mesh || !pickup.mesh.userData) continue;
+    
+    const userData = pickup.mesh.userData;
+    const time = performance.now() * 0.001 + userData.timeOffset;
+    
+    // Floating motion
+    const floatOffset = Math.sin(time * userData.floatSpeed) * 0.2;
+    pickup.mesh.position.y = userData.initialY + floatOffset;
+    
+    // Rotation
+    pickup.mesh.rotation.y += userData.rotateSpeed * deltaTime;
+  }
+}
+
 // Animation loop with timing for animations
 let lastUpdateTime = performance.now(); // Track the last update time
 
@@ -693,6 +815,7 @@ function animate(time) {
   updateProjectiles();
   animatePlayers(cappedDeltaTime);
   animateZombies(zombies, cappedDeltaTime);
+  animateAmmoPickups(cappedDeltaTime); // Animate ammo pickups
   
   // Update camera to follow local player
   if (localPlayer && gameActive) {
@@ -722,6 +845,78 @@ function setupUI() {
   const tabs = document.querySelectorAll('.tab');
   const tabContents = document.querySelectorAll('.tab-content');
   
+  // Add weapon and ammo UI elements
+  const gameUI = document.createElement('div');
+  gameUI.id = 'game-ui';
+  gameUI.innerHTML = `
+    <div id="health-container">
+      <div id="health">Health: 100</div>
+    </div>
+    <div id="weapon-container">
+      <div id="weapon-icon">🔫</div>
+      <div id="ammo-display">7</div>
+    </div>
+  `;
+  document.body.appendChild(gameUI);
+  
+  // Add CSS for the weapon display
+  const style = document.createElement('style');
+  style.textContent = `
+    #game-ui {
+      position: absolute;
+      bottom: 20px;
+      left: 0;
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      pointer-events: none;
+    }
+    #health-container {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+    }
+    #weapon-container {
+      display: flex;
+      align-items: center;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      padding: 10px 20px;
+      border-radius: 5px;
+    }
+    #weapon-icon {
+      font-size: 24px;
+      margin-right: 10px;
+    }
+    #ammo-display {
+      font-size: 20px;
+      font-weight: bold;
+    }
+    #ammo-display.warning {
+      color: red;
+      animation: flash 0.5s;
+    }
+    #ammo-display.low-ammo {
+      color: orange;
+    }
+    #ammo-display.no-ammo {
+      color: red;
+      text-decoration: line-through;
+    }
+    @keyframes flash {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+  `;
+  document.head.appendChild(style);
+  
+  // Hide game UI initially
+  gameUI.style.display = 'none';
+  
   // Tab switching
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
@@ -746,6 +941,7 @@ function setupUI() {
     socket.emit('joinRoom', null, gameName); // null means create a new room
     joinGameDiv.style.display = 'none';
     gameActive = true;
+    document.getElementById('game-ui').style.display = 'flex';
   });
   
   // Join existing game by ID
@@ -755,6 +951,7 @@ function setupUI() {
       socket.emit('joinRoom', enteredRoomId);
       joinGameDiv.style.display = 'none';
       gameActive = true;
+      document.getElementById('game-ui').style.display = 'flex';
     }
   });
   
@@ -862,6 +1059,24 @@ function setupSocketEvents(ui) {
     for (const projectile of state.projectiles) {
       createProjectile(projectile);
     }
+
+    // Create meshes for all existing ammo pickups
+    if (state.ammoPickups) {
+      for (const pickup of state.ammoPickups) {
+        if (!ammoPickups[pickup.id]) {
+          const pickupMesh = createAmmoPickupMesh(pickup);
+          ammoPickups[pickup.id] = {
+            mesh: pickupMesh,
+            data: pickup
+          };
+        }
+      }
+    }
+
+    // If state includes player information with ammo, set it
+    if (state.players && state.players[socket.id]) {
+      updateAmmoDisplay(state.players[socket.id].ammo || 7);
+    }
   });
   
   // New player joined
@@ -931,19 +1146,29 @@ function setupSocketEvents(ui) {
     }
   });
   
-  // New projectile created
+  // New projectile created by server (only after ammo validation)
   socket.on('projectileCreated', (projectile) => {
-    // Don't create duplicates for client-predicted projectiles
-    for (const id in projectiles) {
-      if (id.startsWith('temp-') && projectiles[id].data.ownerId === projectile.ownerId) {
-        // Replace the temporary client-predicted projectile with the server version
-        scene.remove(projectiles[id].mesh);
-        delete projectiles[id];
-        break;
-      }
-    }
-    
+    // Create the projectile in the game world
     createProjectile(projectile);
+    
+    // Reset canFire flag to allow shooting again
+    canFire = true;
+  });
+  
+  // No ammo event - player tried to shoot but was out of ammo
+  socket.on('noAmmo', (data) => {
+    console.log('Server says: No ammo!');
+    updateAmmoDisplay(0); // Make sure we show 0 ammo
+    showAmmoWarning(); // Visual feedback
+    canFire = true; // Allow trying to shoot again
+  });
+  
+  // Ammo update from server
+  socket.on('ammoUpdate', (data) => {
+    console.log('Ammo update from server:', data);
+    updateAmmoDisplay(data.ammo);
+    currentWeapon = data.weapon;
+    canFire = true; // Reset firing flag when receiving ammo update
   });
   
   // Projectile destroyed
@@ -1013,6 +1238,56 @@ function setupSocketEvents(ui) {
     }
   });
   
+  // Ammo pickup collected
+  socket.on('ammoPickupCollected', (data) => {
+    // Play pickup sound effect if available
+    if (window.playPickupSound) {
+      window.playPickupSound();
+    }
+    
+    // Visual effect
+    if (ammoPickups[data.id] && ammoPickups[data.id].mesh) {
+      // Create sparkle particle effect
+      createPickupEffect(ammoPickups[data.id].mesh.position);
+      
+      // Remove the pickup mesh
+      removeAmmoPickup(data.id);
+    }
+    
+    // If this player collected it, show feedback
+    if (data.playerId === socket.id) {
+      // Flash ammo display
+      const ammoDisplay = document.getElementById('ammo-display');
+      if (ammoDisplay) {
+        ammoDisplay.classList.add('ammo-increase');
+        setTimeout(() => {
+          ammoDisplay.classList.remove('ammo-increase');
+        }, 1000);
+      }
+    }
+  });
+  
+  // Ammo pickups update
+  socket.on('ammoPickupsUpdate', (pickups) => {
+    // Remove pickups that are no longer in the list
+    for (const id in ammoPickups) {
+      if (!pickups.find(p => p.id === id)) {
+        removeAmmoPickup(id);
+      }
+    }
+    
+    // Add new pickups
+    for (const pickup of pickups) {
+      if (!ammoPickups[pickup.id]) {
+        const pickupMesh = createAmmoPickupMesh(pickup);
+        ammoPickups[pickup.id] = {
+          mesh: pickupMesh,
+          data: pickup
+        };
+      }
+    }
+  });
+  
   // Update game state from server - fix animation bug for other players
   socket.on('gameStateUpdate', (state) => {
     // Update player positions based on server state
@@ -1065,6 +1340,35 @@ function setupSocketEvents(ui) {
           projectile.position.y,
           projectile.position.z
         );
+      }
+    }
+
+    // Update ammo pickups if needed
+    if (state.ammoPickups) {
+      // Remove pickups that no longer exist
+      for (const pickupId in ammoPickups) {
+        if (!state.ammoPickups.some(p => p.id === pickupId)) {
+          removeAmmoPickup(pickupId);
+        }
+      }
+      
+      // Add new pickups
+      for (const pickup of state.ammoPickups) {
+        if (!ammoPickups[pickup.id]) {
+          const pickupMesh = createAmmoPickupMesh(pickup);
+          ammoPickups[pickup.id] = {
+            mesh: pickupMesh,
+            data: pickup
+          };
+        }
+      }
+    }
+
+    // Update local player's ammo from server state
+    if (state.players && state.players[socket.id]) {
+      const serverAmmo = state.players[socket.id].ammo;
+      if (typeof serverAmmo === 'number' && serverAmmo !== playerAmmo) {
+        updateAmmoDisplay(serverAmmo);
       }
     }
   });
@@ -1132,11 +1436,101 @@ function setupSocketEvents(ui) {
   });
 }
 
+// Create particle effect when picking up ammo
+function createPickupEffect(position) {
+  const particleCount = 15;
+  const particles = new THREE.Group();
+  
+  for (let i = 0; i < particleCount; i++) {
+    const geometry = new THREE.SphereGeometry(0.05, 6, 6);
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xFFD700, // Gold
+      transparent: true,
+      opacity: 0.8
+    });
+    
+    const particle = new THREE.Mesh(geometry, material);
+    particle.position.copy(position);
+    
+    // Random direction
+    particle.userData = {
+      velocity: new THREE.Vector3(
+        (Math.random() - 0.5) * 2,
+        Math.random() * 2,
+        (Math.random() - 0.5) * 2
+      ),
+      age: 0,
+      maxAge: 0.7 + Math.random() * 0.5
+    };
+    
+    particles.add(particle);
+  }
+  
+  scene.add(particles);
+  
+  // Animate and remove after effect completes
+  const startTime = performance.now();
+  
+  function animateParticles() {
+    const now = performance.now();
+    const deltaTime = (now - startTime) / 1000;
+    let alive = false;
+    
+    particles.children.forEach((particle) => {
+      if (particle.userData.age < particle.userData.maxAge) {
+        // Update position
+        particle.position.x += particle.userData.velocity.x * 0.1;
+        particle.position.y += particle.userData.velocity.y * 0.1;
+        particle.position.z += particle.userData.velocity.z * 0.1;
+        
+        // Apply gravity
+        particle.userData.velocity.y -= 0.1;
+        
+        // Age the particle
+        particle.userData.age += deltaTime;
+        
+        // Fade out
+        const lifeRatio = 1 - (particle.userData.age / particle.userData.maxAge);
+        particle.material.opacity = lifeRatio * 0.8;
+        particle.scale.setScalar(lifeRatio);
+        
+        alive = true;
+      }
+    });
+    
+    if (alive) {
+      requestAnimationFrame(animateParticles);
+    } else {
+      scene.remove(particles);
+    }
+  }
+  
+  animateParticles();
+}
+
+// Add CSS for ammo pickup
+function addAmmoPickupStyles() {
+  const style = document.createElement('style');
+  style.textContent += `
+    @keyframes pulseGreen {
+      0% { color: white; transform: scale(1); }
+      50% { color: #00FF00; transform: scale(1.2); }
+      100% { color: white; transform: scale(1); }
+    }
+    
+    #ammo-display.ammo-increase {
+      animation: pulseGreen 1s;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 // Initialize game
 function init() {
   initThree();
   const ui = setupUI();
   setupSocketEvents(ui);
+  addAmmoPickupStyles();
   animate(0); // Start with time 0
 }
 

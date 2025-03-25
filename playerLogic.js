@@ -30,7 +30,9 @@ function createPlayer(socketId) {
     health: 100,
     color: getRandomColor(),
     speed: PLAYER_SPEED,
-    lastUpdateTime: Date.now()
+    lastUpdateTime: Date.now(),
+    weapon: 'pistol', // Default weapon
+    ammo: 7 // Default ammo count for pistol
   };
 }
 

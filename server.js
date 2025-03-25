@@ -51,6 +51,9 @@ const rooms = {};
 // Constants for the game
 const MAP_SIZE = 50; // Half-width/height of the map (total size is 100x100)
 const PLAYER_SPEED = playerLogic.PLAYER_SPEED; // Use player speed from playerLogic
+const AMMO_PICKUP_AMOUNT = 7; // Amount of ammo to add when pickup is collected
+const MAX_AMMO_PICKUPS = 7; // Number of ammo pickups on the map
+const AMMO_PICKUP_RADIUS = 0.7; // Collision radius for ammo pickups
 
 // Check if a position is within map boundaries
 function isWithinMapBoundaries(position) {
@@ -264,6 +267,48 @@ function checkMapCollisions(player, map, movement) {
   return { collision: collision, position: player.position };
 }
 
+// Create initial ammo pickup positions
+function createAmmoPickups(mapSize) {
+  const pickups = [];
+  for (let i = 0; i < MAX_AMMO_PICKUPS; i++) {
+    pickups.push(generateRandomAmmoPickup(mapSize));
+  }
+  return pickups;
+}
+
+// Generate a single ammo pickup at a random position
+function generateRandomAmmoPickup(mapSize) {
+  const margin = 5; // Keep away from map edges
+  return {
+    id: uuidv4(),
+    position: {
+      x: Math.random() * (mapSize * 2 - margin * 2) - mapSize + margin,
+      y: 0.5, // Slightly above ground
+      z: Math.random() * (mapSize * 2 - margin * 2) - mapSize + margin
+    },
+    createdAt: Date.now()
+  };
+}
+
+// Check if a player has collected an ammo pickup
+function checkAmmoPickupCollisions(player, ammoPickups) {
+  const playerRadius = 0.5; // Player collision radius
+  const collectedPickups = [];
+
+  for (const pickup of ammoPickups) {
+    const dx = player.position.x - pickup.position.x;
+    const dz = player.position.z - pickup.position.z;
+    const distanceSquared = dx * dx + dz * dz;
+    const combinedRadius = playerRadius + AMMO_PICKUP_RADIUS;
+    
+    if (distanceSquared < combinedRadius * combinedRadius) {
+      collectedPickups.push(pickup);
+    }
+  }
+  
+  return collectedPickups;
+}
+
 // Helper function to generate a random color in hex format
 function getRandomColor() {
   // Generate vibrant colors by using higher values in RGB
@@ -292,7 +337,8 @@ io.on('connection', (socket) => {
         roomName: roomName || `Game ${roomId.substring(0, 6)}`,
         map: generatedMap,
         mapSize: MAP_SIZE, // Store map size for boundary checks
-        lastZombieUpdate: Date.now() // Initialize timestamp for zombie movement calculations
+        lastZombieUpdate: Date.now(), // Initialize timestamp for zombie movement calculations
+        ammoPickups: createAmmoPickups(MAP_SIZE) // Initialize ammo pickups
       };
       
       // Initialize zombies for the new room
@@ -313,6 +359,12 @@ io.on('connection', (socket) => {
     
     // Send current room state to the new player
     socket.emit('gameState', rooms[roomId]);
+    
+    // Also explicitly send initial ammo state
+    socket.emit('ammoUpdate', { 
+      ammo: player.ammo, 
+      weapon: player.weapon 
+    });
     
     // Notify other players about the new player
     socket.to(roomId).emit('playerJoined', player);
@@ -343,6 +395,38 @@ io.on('connection', (socket) => {
       clampToMapBoundaries
     );
     
+    // Check for ammo pickup collisions
+    const collectedPickups = checkAmmoPickupCollisions(player, room.ammoPickups);
+    
+    if (collectedPickups.length > 0) {
+      for (const pickup of collectedPickups) {
+        // Add ammo to player without cap
+        player.ammo += AMMO_PICKUP_AMOUNT;
+        
+        // Notify player about ammo update
+        socket.emit('ammoUpdate', {
+          ammo: player.ammo,
+          weapon: player.weapon
+        });
+        
+        // Remove collected pickup
+        room.ammoPickups = room.ammoPickups.filter(p => p.id !== pickup.id);
+        
+        // Create a new pickup
+        room.ammoPickups.push(generateRandomAmmoPickup(room.mapSize));
+        
+        // Notify all clients about the collected pickup and new pickup
+        io.to(socket.roomId).emit('ammoPickupCollected', {
+          id: pickup.id,
+          playerId: socket.id,
+          newAmmo: player.ammo
+        });
+        
+        // Send updated pickups to all clients
+        io.to(socket.roomId).emit('ammoPickupsUpdate', room.ammoPickups);
+      }
+    }
+
     // Send corrected position back to the client who moved
     socket.emit('playerPositionCorrection', {
       position: player.position,
@@ -381,6 +465,24 @@ io.on('connection', (socket) => {
     const room = rooms[socket.roomId];
     const player = room.players[socket.id];
     
+    if (!player) {
+      console.log('Player not found for shooting event');
+      return;
+    }
+    
+    // IMPORTANT: Check if player has ammo - if zero, block shooting completely
+    if (typeof player.ammo !== 'number' || player.ammo <= 0) {
+      console.log(`BLOCKED: Player ${socket.id} attempted to shoot with ${player.ammo} ammo`);
+      socket.emit('noAmmo', { weapon: player.weapon });
+      return;
+    }
+    
+    console.log(`Shoot attempt from player ${socket.id}. Current ammo: ${player.ammo}`);
+    
+    // Consume ammo FIRST before creating projectile
+    player.ammo -= 1;
+    console.log(`Player ${player.id} ammo reduced to: ${player.ammo}`);
+    
     // Create projectile using weaponLogic
     const projectile = weaponLogic.createProjectile(socket.id, data.position, data.direction);
     
@@ -389,6 +491,12 @@ io.on('connection', (socket) => {
     
     // Broadcast new projectile to all players in the room
     io.to(socket.roomId).emit('projectileCreated', projectile);
+    
+    // Update the player about their current ammo
+    socket.emit('ammoUpdate', { 
+      ammo: player.ammo, 
+      weapon: player.weapon 
+    });
   });
   
   // Handle player disconnect
@@ -447,12 +555,16 @@ setInterval(() => {
             {
               ...player,
               // Explicitly ensure moving is a boolean
-              moving: player.moving === true
+              moving: player.moving === true,
+              // Explicitly include weapon and ammo properties
+              weapon: player.weapon,
+              ammo: player.ammo
             }
           ])
         ),
         projectiles: room.projectiles,
-        zombies: room.zombies
+        zombies: room.zombies,
+        ammoPickups: room.ammoPickups
       };
       
       io.to(roomId).emit('gameStateUpdate', cleanState);

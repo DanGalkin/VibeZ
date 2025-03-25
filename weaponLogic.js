@@ -6,6 +6,17 @@ const PROJECTILE_MAX_DISTANCE = 50;
 const PROJECTILE_DAMAGE = 10;
 const PROJECTILE_COLLISION_RADIUS = 1;
 
+// Weapon configurations
+const WEAPONS = {
+  pistol: {
+    maxAmmo: 7,
+    damage: 10,
+    projectileSpeed: 0.5,
+    ammoPerShot: 1
+  }
+  // Add more weapons here as needed
+};
+
 // Create a new projectile
 function createProjectile(ownerId, position, direction) {
   return {
@@ -117,10 +128,77 @@ function handleProjectileHit(data, room, io, zombieLogic, checkMapCollisions) {
   }
 }
 
+/**
+ * Check if player has enough ammo to shoot
+ * @param {Object} player - The player object
+ * @returns {boolean} True if player can shoot
+ */
+function canPlayerShoot(player) {
+  // Strict validation - ensure ammo property is a positive number
+  if (!player) {
+    console.log('Cannot shoot: player is undefined');
+    return false;
+  }
+  
+  if (typeof player.ammo !== 'number') {
+    console.log('Cannot shoot: player.ammo is not a number');
+    return false;
+  }
+  
+  if (player.ammo <= 0) {
+    console.log(`Cannot shoot: player ${player.id} has ${player.ammo} ammo`);
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * Handle ammo consumption when a player shoots
+ * @param {Object} player - The player object
+ * @returns {boolean} Whether the shot was successful
+ */
+function handleShot(player) {
+  if (!canPlayerShoot(player)) {
+    return false;
+  }
+  
+  // Get weapon config
+  const weaponConfig = WEAPONS[player.weapon] || WEAPONS.pistol;
+  
+  // Ensure ammo doesn't go negative
+  const ammoToConsume = Math.min(player.ammo, weaponConfig.ammoPerShot);
+  
+  // IMPORTANT: Double check that we have ammo to consume
+  if (ammoToConsume <= 0) {
+    return false;
+  }
+  
+  player.ammo -= ammoToConsume;
+  
+  console.log(`Player ${player.id} fired weapon. Ammo remaining: ${player.ammo}`);
+  return true;
+}
+
+/**
+ * Add ammo to player
+ * @param {Object} player - The player object
+ * @param {number} amount - Amount of ammo to add
+ */
+function addAmmo(player, amount) {
+  // No maximum cap - just add the ammo
+  player.ammo += amount;
+  return player.ammo;
+}
+
 module.exports = {
   createProjectile,
   updateProjectiles,
   handleProjectileHit,
+  canPlayerShoot,
+  handleShot,
+  addAmmo,
+  WEAPONS,
   PROJECTILE_SPEED,
   PROJECTILE_MAX_DISTANCE,
   PROJECTILE_DAMAGE,
