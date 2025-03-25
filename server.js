@@ -10,6 +10,9 @@ const { generateMap, MAP_ELEMENT_TYPES } = require('./generateMap');
 // Import zombie logic
 const zombieLogic = require('./zombieLogic');
 
+// Import player logic
+const playerLogic = require('./playerLogic');
+
 // Initialize Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
@@ -44,7 +47,7 @@ const rooms = {};
 
 // Constants for the game
 const MAP_SIZE = 50; // Half-width/height of the map (total size is 100x100)
-const PLAYER_SPEED = 5.0; // Units per second (server-controlled speed)
+const PLAYER_SPEED = playerLogic.PLAYER_SPEED; // Use player speed from playerLogic
 
 // Check if a position is within map boundaries
 function isWithinMapBoundaries(position) {
@@ -300,18 +303,8 @@ io.on('connection', (socket) => {
     // Join the room
     socket.join(roomId);
     
-    // Add player to room state
-    const player = {
-      id: socket.id,
-      position: { x: Math.random() * 10 - 5, y: 0, z: Math.random() * 10 - 5 },
-      rotation: 0,
-      sightAngle: 0, // Add initial sight angle
-      moving: false, // Explicitly set as not moving initially
-      health: 100,
-      color: getRandomColor(), // Assign a random color to the player
-      speed: PLAYER_SPEED, // Add the speed property
-      lastUpdateTime: Date.now() // Track the last update time for movement validation
-    };
+    // Create player using playerLogic
+    const player = playerLogic.createPlayer(socket.id);
     
     rooms[roomId].players[socket.id] = player;
     
@@ -336,55 +329,16 @@ io.on('connection', (socket) => {
     
     const room = rooms[socket.roomId];
     const player = room.players[socket.id];
-    const prevPosition = { ...player.position };
     
-    // Movement is now fully server-based. We calculate the new position
-    // using the input direction from the client and the server's timestep
-    const currentTime = Date.now();
-    const deltaTime = (currentTime - player.lastUpdateTime) / 1000; // Convert ms to seconds
-    player.lastUpdateTime = currentTime;
-    
-    // Cap delta time to prevent teleporting after connection issues
-    const cappedDeltaTime = Math.min(deltaTime, 0.2);
-    
-    if (movement.moving && movement.direction) {
-      // Normalize direction vector
-      const length = Math.sqrt(movement.direction.x * movement.direction.x + movement.direction.z * movement.direction.z);
-      if (length > 0) {
-        const normalizedDir = {
-          x: movement.direction.x / length,
-          z: movement.direction.z / length
-        };
-        
-        // Calculate new position based on direction and speed
-        const newX = player.position.x + normalizedDir.x * player.speed * cappedDeltaTime;
-        const newZ = player.position.z + normalizedDir.z * player.speed * cappedDeltaTime;
-        
-        // Update player position with server-calculated values
-        player.position = {
-          x: newX,
-          y: player.position.y,
-          z: newZ
-        };
-      }
-    }
-    
-    // Update player rotation from client input
-    player.rotation = movement.rotation;
-    player.moving = movement.moving === true; // Force to boolean
-    
-    // Check collisions with improved function
-    const collisionResult = checkMapCollisions(player, room.map, null);
-    
-    if (collisionResult.collision) {
-      // Collision detected, use corrected position from collision response
-      player.position = collisionResult.position;
-    }
-    
-    // Double-check to make sure player is within map boundaries
-    if (!isWithinMapBoundaries(player.position)) {
-      player.position = clampToMapBoundaries(player.position);
-    }
+    // Use playerLogic to handle movement
+    playerLogic.handlePlayerMovement(
+      player, 
+      movement, 
+      checkMapCollisions, 
+      room.map, 
+      isWithinMapBoundaries, 
+      clampToMapBoundaries
+    );
     
     // Send corrected position back to the client who moved
     socket.emit('playerPositionCorrection', {
