@@ -13,6 +13,9 @@ const zombieLogic = require('./zombieLogic');
 // Import player logic
 const playerLogic = require('./playerLogic');
 
+// Import weapon logic
+const weaponLogic = require('./weaponLogic');
+
 // Initialize Express app and HTTP server
 const app = express();
 const server = http.createServer(app);
@@ -378,15 +381,8 @@ io.on('connection', (socket) => {
     const room = rooms[socket.roomId];
     const player = room.players[socket.id];
     
-    // Create projectile using player's position and direction data
-    const projectileId = uuidv4();
-    const projectile = {
-      id: projectileId,
-      ownerId: socket.id,
-      position: data.position,
-      direction: data.direction,
-      speed: 0.5 // Adjust as needed
-    };
+    // Create projectile using weaponLogic
+    const projectile = weaponLogic.createProjectile(socket.id, data.position, data.direction);
     
     // Add projectile to room state
     room.projectiles.push(projectile);
@@ -424,15 +420,7 @@ io.on('connection', (socket) => {
     const room = rooms[socket.roomId];
     if (!room) return;
     
-    if (data.type === 'zombie' && data.targetId) {
-      const zombie = room.zombies.find(z => z.id === data.targetId);
-      if (zombie) {
-        // Pass the checkMapCollisions function as the fifth parameter
-        const destroyed = zombieLogic.handleZombieHit(zombie, room, io, 10, checkMapCollisions);
-        // ...existing code...
-      }
-    }
-    // ...existing code...
+    weaponLogic.handleProjectileHit(data, room, io, zombieLogic, checkMapCollisions);
   });
 });
 
@@ -443,82 +431,11 @@ setInterval(() => {
   for (const roomId in rooms) {
     const room = rooms[roomId];
     
-    // Update projectiles
-    for (let i = room.projectiles.length - 1; i >= 0; i--) {
-      const projectile = room.projectiles[i];
-      
-      // Move projectile
-      projectile.position.x += projectile.direction.x * projectile.speed;
-      projectile.position.z += projectile.direction.z * projectile.speed;
-      
-      // Check for collisions with players
-      let hitPlayer = false;
-      for (const playerId in room.players) {
-        // Skip the owner of the projectile
-        if (playerId === projectile.ownerId) continue;
-        
-        const player = room.players[playerId];
-        
-        // Simple distance-based collision check
-        const dx = player.position.x - projectile.position.x;
-        const dz = player.position.z - projectile.position.z;
-        const distance = Math.sqrt(dx * dx + dz * dz);
-        
-        if (distance < 1) { // Adjust collision radius as needed
-          // Player hit!
-          player.health -= 10; // Adjust damage as needed
-          
-          // Notify players about the hit
-          io.to(roomId).emit('playerHit', {
-            playerId: playerId,
-            health: player.health
-          });
-          
-          // Remove projectile
-          room.projectiles.splice(i, 1);
-          io.to(roomId).emit('projectileDestroyed', projectile.id);
-          
-          hitPlayer = true;
-          break;
-        }
-      }
-      
-      // Check for collisions with zombies if no player was hit
-      if (!hitPlayer) {
-        for (let j = 0; j < room.zombies.length; j++) {
-          const zombie = room.zombies[j];
-          
-          // Distance-based collision check
-          const dx = zombie.position.x - projectile.position.x;
-          const dz = zombie.position.z - projectile.position.z;
-          const distance = Math.sqrt(dx * dx + dz * dz);
-          
-          if (distance < zombieLogic.ZOMBIE_COLLISION_RADIUS) {
-            // Zombie hit!
-            zombieLogic.handleZombieHit(zombie, room, io);
-            
-            // Remove projectile
-            room.projectiles.splice(i, 1);
-            io.to(roomId).emit('projectileDestroyed', projectile.id);
-            hitPlayer = true; // Use as "hit something" flag
-            break;
-          }
-        }
-      }
-      
-      // Remove projectiles that have traveled too far
-      if (!hitPlayer) {
-        const distanceTraveled = Math.sqrt(
-          Math.pow(projectile.position.x, 2) + 
-          Math.pow(projectile.position.z, 2)
-        );
-        
-        if (distanceTraveled > 50) { // Adjust max distance as needed
-          room.projectiles.splice(i, 1);
-          io.to(roomId).emit('projectileDestroyed', projectile.id);
-        }
-      }
-    }
+    // Set room ID for weaponLogic to use when emitting socket events
+    room.id = roomId;
+    
+    // Update projectiles using weaponLogic - pass zombieLogic and checkMapCollisions
+    weaponLogic.updateProjectiles(room, io, zombieLogic, checkMapCollisions);
     
     // Send updated game state to all players in the room (less frequently)
     if (Math.random() < 0.1) { // 10% chance, so roughly 6 times per second
