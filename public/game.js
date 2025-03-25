@@ -46,6 +46,42 @@ let playerHealth = 100;
 let mousePosition = new THREE.Vector2();
 let groundMousePosition = new THREE.Vector3();
 
+// Add performance monitoring variables
+let serverPerformance = {
+  maxLoopTime: 0
+};
+
+// Client-side performance monitoring
+const clientPerformance = {
+  frames: 0,
+  lastFpsUpdate: performance.now(),
+  fps: 0,
+  updateTimes: {}, // Store times for different update functions
+  functionMaxTimes: {}, // Store max times for each function during last second
+  lastResetTime: performance.now() // Time of last performance metrics reset
+};
+
+// Function to measure execution time of a function
+function measureExecutionTime(funcName, func, ...args) {
+  const startTime = performance.now();
+  const result = func(...args);
+  const endTime = performance.now();
+  const executionTime = endTime - startTime;
+  
+  // Store execution time
+  if (!clientPerformance.updateTimes[funcName]) {
+    clientPerformance.updateTimes[funcName] = [];
+  }
+  clientPerformance.updateTimes[funcName].push(executionTime);
+  
+  // Update max time if this execution was slower
+  if (!clientPerformance.functionMaxTimes[funcName] || executionTime > clientPerformance.functionMaxTimes[funcName]) {
+    clientPerformance.functionMaxTimes[funcName] = executionTime;
+  }
+  
+  return result;
+}
+
 // Initialize Three.js scene
 function initThree() {
   // Create scene
@@ -792,6 +828,27 @@ function animate(time) {
   const deltaTime = (time - lastUpdateTime) / 1000; // Convert ms to seconds
   lastUpdateTime = time;
   
+  // Update FPS counter
+  clientPerformance.frames++;
+  if (time - clientPerformance.lastFpsUpdate >= 1000) {
+    // Calculate FPS
+    clientPerformance.fps = Math.round(
+      (clientPerformance.frames * 1000) / (time - clientPerformance.lastFpsUpdate)
+    );
+    clientPerformance.frames = 0;
+    clientPerformance.lastFpsUpdate = time;
+    
+    // Update client performance display
+    updateClientPerformanceDisplay();
+  }
+  
+  // Reset performance metrics every second
+  if (time - clientPerformance.lastResetTime >= 1000) {
+    clientPerformance.updateTimes = {};
+    clientPerformance.functionMaxTimes = {};
+    clientPerformance.lastResetTime = time;
+  }
+  
   const cappedDeltaTime = Math.min(deltaTime, 0.1); // Cap delta time to avoid large jumps
   
   requestAnimationFrame(animate);
@@ -810,12 +867,12 @@ function animate(time) {
     }
   }
   
-  // Update movement with delta time
-  updateMovement(cappedDeltaTime);
-  updateProjectiles();
-  animatePlayers(cappedDeltaTime);
-  animateZombies(zombies, cappedDeltaTime);
-  animateAmmoPickups(cappedDeltaTime); // Animate ammo pickups
+  // Update movement with delta time - wrapped with performance measurement
+  measureExecutionTime('updateMovement', updateMovement, cappedDeltaTime);
+  measureExecutionTime('updateProjectiles', updateProjectiles);
+  measureExecutionTime('animatePlayers', animatePlayers, cappedDeltaTime);
+  measureExecutionTime('animateZombies', animateZombies, zombies, cappedDeltaTime);
+  measureExecutionTime('animateAmmoPickups', animateAmmoPickups, cappedDeltaTime);
   
   // Update camera to follow local player
   if (localPlayer && gameActive) {
@@ -829,7 +886,48 @@ function animate(time) {
     updatePlayerSight();
   }
   
-  renderer.render(scene, camera);
+  // Measure render time
+  measureExecutionTime('renderScene', () => {
+    renderer.render(scene, camera);
+  });
+}
+
+// Update the client performance display
+function updateClientPerformanceDisplay() {
+  const perfMonitor = document.getElementById('client-performance-monitor');
+  if (!perfMonitor) return;
+  
+  // Get the slowest function
+  let slowestFunction = 'none';
+  let slowestTime = 0;
+  
+  for (const funcName in clientPerformance.functionMaxTimes) {
+    if (clientPerformance.functionMaxTimes[funcName] > slowestTime) {
+      slowestTime = clientPerformance.functionMaxTimes[funcName];
+      slowestFunction = funcName;
+    }
+  }
+  
+  // Update the display
+  perfMonitor.textContent = `FPS: ${clientPerformance.fps} | Slowest: ${slowestFunction} (${slowestTime.toFixed(2)}ms)`;
+  
+  // Visual feedback based on performance
+  perfMonitor.classList.remove('warning', 'critical');
+  
+  // FPS-based warnings
+  if (clientPerformance.fps < 50 && clientPerformance.fps >= 30) {
+    perfMonitor.classList.add('warning');
+  } else if (clientPerformance.fps < 30) {
+    perfMonitor.classList.add('critical');
+  }
+  
+  // Execution time warnings
+  if (slowestTime > 16) { // More than one frame budget
+    perfMonitor.classList.add('warning');
+  }
+  if (slowestTime > 33) { // More than two frame budgets
+    perfMonitor.classList.add('critical');
+  }
 }
 
 // Set up UI and game joining
@@ -1434,6 +1532,12 @@ function setupSocketEvents(ui) {
     // Update movement state
     localPlayer.userData.walking = data.moving === true;
   });
+
+  // Add handler for server performance metrics
+  socket.on('serverPerformance', (data) => {
+    serverPerformance = data;
+    updatePerformanceDisplay();
+  });
 }
 
 // Create particle effect when picking up ammo
@@ -1525,12 +1629,35 @@ function addAmmoPickupStyles() {
   document.head.appendChild(style);
 }
 
+// Update the performance monitor display
+function updatePerformanceDisplay() {
+  const perfMonitor = document.getElementById('performance-monitor');
+  if (!perfMonitor) return;
+  
+  const maxTime = parseFloat(serverPerformance.maxLoopTime);
+  perfMonitor.textContent = `Server: ${maxTime.toFixed(2)}ms`;
+  
+  // Visual feedback based on performance
+  perfMonitor.classList.remove('warning', 'critical');
+  if (maxTime > 16.67) { // More than one frame at 60fps
+    perfMonitor.classList.add('warning');
+  }
+  if (maxTime > 33.33) { // More than two frames at 60fps
+    perfMonitor.classList.add('critical');
+  }
+}
+
 // Initialize game
 function init() {
   initThree();
   const ui = setupUI();
   setupSocketEvents(ui);
   addAmmoPickupStyles();
+  
+  // Add initial setup for performance monitors
+  updatePerformanceDisplay();
+  updateClientPerformanceDisplay();
+  
   animate(0); // Start with time 0
 }
 

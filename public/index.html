@@ -28,39 +28,35 @@
       padding: 10px;
       border-radius: 5px;
     }
-    #join-game {
+    .performance-monitor {
       position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background-color: rgba(0, 0, 0, 0.7);
-      padding: 20px;
-      border-radius: 10px;
+      right: 10px;
+      background-color: rgba(0, 0, 0, 0.5);
       color: white;
-      font-family: Arial, sans-serif;
-      text-align: center;
-      width: 80%;
-      max-width: 500px;
-    }
-    button {
-      background-color: #4CAF50;
-      border: none;
-      color: white;
-      padding: 10px 20px;
-      text-align: center;
-      text-decoration: none;
-      display: inline-block;
-      font-size: 16px;
-      margin: 10px 2px;
-      cursor: pointer;
+      padding: 8px 12px;
       border-radius: 5px;
+      font-family: monospace;
+      font-size: 12px;
+      text-align: right;
+      min-width: 280px;
     }
-    input {
-      padding: 10px;
-      width: 60%;
-      border-radius: 5px;
-      border: none;
-      margin-bottom: 10px;
+    #performance-monitor {
+      top: 10px;
+    }
+    #client-performance-monitor {
+      top: 40px;
+    }
+    .performance-monitor.warning {
+      background-color: rgba(255, 100, 0, 0.7);
+    }
+    .performance-monitor.critical {
+      background-color: rgba(255, 0, 0, 0.7);
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.7; }
+      50% { opacity: 1; }
+      100% { opacity: 0.7; }
     }
     .game-rooms {
       max-height: 200px;
@@ -119,6 +115,9 @@
   <div id="ui">
     <div id="health">Health: 100</div>
   </div>
+  
+  <div id="performance-monitor" class="performance-monitor">Server: 0.00ms</div>
+  <div id="client-performance-monitor" class="performance-monitor">FPS: 0 | Slowest: none (0.00ms)</div>
   
   <div id="join-game">
     <h2>Isometric Multiplayer Game</h2>

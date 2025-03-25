@@ -21,6 +21,13 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// Add performance monitoring variables
+const performanceMetrics = {
+  lastSecondLoopTimes: [], // Stores loop execution times during last second
+  maxLoopTime: 0, // Maximum loop time in the last reporting interval
+  lastReportTime: Date.now() // Last time we sent metrics to clients
+};
+
 // Serve static files from the 'public' directory
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -535,6 +542,9 @@ io.on('connection', (socket) => {
 // Game loop (runs at 60 FPS)
 const TICK_RATE = 1000 / 60;
 setInterval(() => {
+  // Start measuring loop execution time
+  const loopStartTime = performance.now();
+  
   // Update each room
   for (const roomId in rooms) {
     const room = rooms[roomId];
@@ -569,6 +579,35 @@ setInterval(() => {
       
       io.to(roomId).emit('gameStateUpdate', cleanState);
     }
+  }
+  
+  // End measuring loop execution time
+  const loopEndTime = performance.now();
+  const loopExecutionTime = loopEndTime - loopStartTime;
+  
+  // Store this loop's execution time
+  performanceMetrics.lastSecondLoopTimes.push(loopExecutionTime);
+  
+  // Update max time if this loop was slower
+  if (loopExecutionTime > performanceMetrics.maxLoopTime) {
+    performanceMetrics.maxLoopTime = loopExecutionTime;
+  }
+  
+  // Send performance metrics to clients once per second
+  const now = Date.now();
+  if (now - performanceMetrics.lastReportTime >= 1000) {
+    // Calculate max execution time from stored values
+    const maxTime = performanceMetrics.maxLoopTime;
+    
+    // Send to all connected clients
+    io.emit('serverPerformance', {
+      maxLoopTime: maxTime.toFixed(2)
+    });
+    
+    // Reset tracking for next second
+    performanceMetrics.lastSecondLoopTimes = [];
+    performanceMetrics.maxLoopTime = 0;
+    performanceMetrics.lastReportTime = now;
   }
 }, TICK_RATE);
 
