@@ -16,6 +16,7 @@ let localPlayer = null;
 let roomId = null;
 let mapContainer = null;
 let mapBoundaries = null; // Add reference to map boundaries visualization
+let crosshair = null; // Add reference to player's crosshair
 
 // Add ammo tracking variables
 let playerAmmo = 7; // Default starting ammo
@@ -24,6 +25,8 @@ let canFire = true; // Flag to prevent multiple shots while waiting for server r
 
 // Constants
 const MAP_SIZE = 50; // Should match server-side MAP_SIZE
+
+const CROSSHAIR_DISTANCE = 4;
 
 // Movement controls
 const keys = {
@@ -60,6 +63,10 @@ const clientPerformance = {
   functionMaxTimes: {}, // Store max times for each function during last second
   lastResetTime: performance.now() // Time of last performance metrics reset
 };
+
+// Add a variable to track the last mouse position
+let lastMouseGroundPosition = new THREE.Vector3();
+let mouseHasMoved = false;
 
 // Function to measure execution time of a function
 function measureExecutionTime(funcName, func, ...args) {
@@ -268,6 +275,9 @@ function setupControls() {
     // Calculate intersection with ground
     updateGroundMousePosition();
     
+    // Set flag that mouse has moved
+    mouseHasMoved = true;
+    
     // Update player sight direction if the player exists
     if (localPlayer && gameActive) {
       updatePlayerSight();
@@ -358,12 +368,21 @@ function updateGroundMousePosition() {
   
   // Calculate the intersection with the ground plane
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const previousGroundPosition = groundMousePosition.clone();
   raycaster.ray.intersectPlane(groundPlane, groundMousePosition);
+  
+  // Set mouseHasMoved flag based on if the ground position changed significantly
+  if (lastMouseGroundPosition.distanceToSquared(groundMousePosition) > 0.01) {
+    mouseHasMoved = true;
+  }
 }
 
 // Update player sight direction based on mouse position
 function updatePlayerSight() {
   if (!localPlayer || !groundMousePosition) return;
+  
+  // If the mouse hasn't moved, don't change the sight direction
+  if (!mouseHasMoved) return;
   
   // Calculate direction from player to mouse position
   const dx = groundMousePosition.x - localPlayer.position.x;
@@ -385,6 +404,13 @@ function updatePlayerSight() {
   socket.emit('playerSight', {
     angle: newRotation
   });
+  
+  // Update crosshair position
+  updateCrosshairPosition();
+  
+  // Store current ground position for comparison
+  lastMouseGroundPosition.copy(groundMousePosition);
+  mouseHasMoved = false;
 }
 
 // Helper function to interpolate between angles (considering the shortest path)
@@ -882,8 +908,14 @@ function animate(time) {
     camera.position.z = localPlayer.position.z + 20;
     camera.lookAt(localPlayer.position);
     
-    // Update player sight after camera moves
-    updatePlayerSight();
+    // Only update player sight if mouse has moved
+    // This prevents the player from rotating when just moving with keyboard
+    if (mouseHasMoved) {
+      updatePlayerSight();
+    } else {
+      // Just update crosshair position without changing player rotation
+      updateCrosshairPosition();
+    }
   }
   
   // Measure render time
@@ -1138,6 +1170,12 @@ function setupSocketEvents(ui) {
       // Set local player
       if (playerId === socket.id) {
         localPlayer = players[playerId].mesh;
+        
+        // Create crosshair for local player only
+        if (!crosshair) {
+          crosshair = createCrosshairMesh();
+          updateCrosshairPosition();
+        }
       }
     }
     
@@ -1523,6 +1561,8 @@ function setupSocketEvents(ui) {
     // Otherwise, lerp over a short period for visual smoothness
     if (distance > 2.0) {
       localPlayer.position.copy(targetPos);
+      // Update crosshair position immediately
+      updateCrosshairPosition();
     } else {
       // Store the target for smooth interpolation in the animation loop
       localPlayer.userData.targetPosition = targetPos;
@@ -1645,6 +1685,53 @@ function updatePerformanceDisplay() {
   if (maxTime > 33.33) { // More than two frames at 60fps
     perfMonitor.classList.add('critical');
   }
+}
+
+// Create a crosshair mesh to show player's aiming direction
+function createCrosshairMesh() {
+  const crosshairGroup = new THREE.Group();
+  
+  // Create a material for the crosshair
+  const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+  
+  // Create horizontal line
+  const horizontalGeometry = new THREE.BoxGeometry(0.4, 0.05, 0.05);
+  const horizontalLine = new THREE.Mesh(horizontalGeometry, material);
+  crosshairGroup.add(horizontalLine);
+  
+  // Create vertical line
+  const verticalGeometry = new THREE.BoxGeometry(0.05, 0.4, 0.05);
+  const verticalLine = new THREE.Mesh(verticalGeometry, material);
+  crosshairGroup.add(verticalLine);
+  
+  // Create center dot
+  const centerGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+  const centerDot = new THREE.Mesh(centerGeometry, material);
+  crosshairGroup.add(centerDot);
+  
+  // Set position to default
+  crosshairGroup.position.set(0, 0.5, 0);
+  
+  // Add to scene
+  scene.add(crosshairGroup);
+  return crosshairGroup;
+}
+
+// Update crosshair position based on player sight direction
+function updateCrosshairPosition() {
+  if (!localPlayer || !crosshair) return;
+  
+  // Get player's forward direction based on rotation
+  const direction = new THREE.Vector3(0, 0, 1);
+  direction.applyAxisAngle(new THREE.Vector3(0, 1, 0), localPlayer.rotation.y);
+  
+  // Set crosshair position 6 units in front of player
+  crosshair.position.x = localPlayer.position.x + direction.x * CROSSHAIR_DISTANCE;
+  crosshair.position.z = localPlayer.position.z + direction.z * CROSSHAIR_DISTANCE;
+  crosshair.position.y = 0.5; // Slightly above ground
+  
+  // Make crosshair always face camera
+  crosshair.lookAt(camera.position);
 }
 
 // Initialize game
