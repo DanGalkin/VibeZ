@@ -74,6 +74,14 @@ const FOG_COLOR = 0x000000; // Black fog
 const FOG_OPACITY = 0.5;    // Semi-transparent
 const FOG_HEIGHT = 0.2;     // Just above ground level
 
+// Add audio context and sounds
+let audioContext;
+let gunshotBuffer;
+let ammoPickupBuffer;
+let zombieBiteBuffer;
+let audioInitialized = false;
+let audioListener;
+
 // Function to measure execution time of a function
 function measureExecutionTime(funcName, func, ...args) {
   const startTime = performance.now();
@@ -1573,6 +1581,16 @@ function setupSocketEvents(ui) {
     
     // Reset canFire flag to allow shooting again
     canFire = true;
+    
+    // Play gunshot sound at the projectile's starting position
+    if (projectile.position) {
+      const soundPosition = new THREE.Vector3(
+        projectile.position.x,
+        projectile.position.y || 0.5,
+        projectile.position.z
+      );
+      playGunshotSound(soundPosition);
+    }
   });
   
   // No ammo event - player tried to shoot but was out of ammo
@@ -1600,6 +1618,9 @@ function setupSocketEvents(ui) {
   socket.on('playerHit', (data) => {
     if (data.playerId === socket.id) {
       ui.updateHealth(data.health);
+      
+      // Play zombie bite sound if local player is hit
+      playZombieBiteSound();
       
       // Flash screen red
       scene.background = new THREE.Color(0xff0000);
@@ -1687,11 +1708,6 @@ function setupSocketEvents(ui) {
   
   // Ammo pickup collected
   socket.on('ammoPickupCollected', (data) => {
-    // Play pickup sound effect if available
-    if (window.playPickupSound) {
-      window.playPickupSound();
-    }
-    
     // Visual effect
     if (ammoPickups[data.id] && ammoPickups[data.id].mesh) {
       // Create sparkle particle effect
@@ -1701,8 +1717,11 @@ function setupSocketEvents(ui) {
       removeAmmoPickup(data.id);
     }
     
-    // If this player collected it, show feedback
+    // If this player collected it, show feedback and play sound
     if (data.playerId === socket.id) {
+      // Play pickup sound
+      playAmmoPickupSound();
+      
       // Flash ammo display
       const ammoDisplay = document.getElementById('ammo-display');
       if (ammoDisplay) {
@@ -2120,9 +2139,98 @@ function updateCrosshairPosition() {
   crosshair.lookAt(camera.position);
 }
 
+// Initialize audio system
+function initAudio() {
+  try {
+    // Create audio context
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    
+    // Create audio listener and attach to camera
+    audioListener = new THREE.AudioListener();
+    camera.add(audioListener);
+    
+    // Load gunshot sound
+    const audioLoader = new THREE.AudioLoader();
+    audioLoader.load('sounds/gunshot.mp3', function(buffer) {
+      gunshotBuffer = buffer;
+      console.log('Gunshot sound loaded successfully');
+    });
+    
+    // Load ammo pickup sound
+    audioLoader.load('sounds/item-pickup.mp3', function(buffer) {
+      ammoPickupBuffer = buffer;
+      console.log('Ammo pickup sound loaded successfully');
+    });
+    
+    // Load zombie bite sound
+    audioLoader.load('sounds/zombie-bite.mp3', function(buffer) {
+      zombieBiteBuffer = buffer;
+      console.log('Zombie bite sound loaded successfully');
+    });
+    
+    audioInitialized = true;
+  } catch(e) {
+    console.error('Audio initialization failed:', e);
+  }
+}
+
+// Play gunshot sound at a specific position
+function playGunshotSound(position) {
+  if (!audioInitialized || !audioListener || !gunshotBuffer) return;
+  
+  // Create a positional audio source
+  const sound = new THREE.PositionalAudio(audioListener);
+  sound.setBuffer(gunshotBuffer);
+  sound.setRefDistance(5); // Distance at which the volume is full
+  sound.setMaxDistance(25); // Distance at which the volume is zero
+  sound.setVolume(0.5);
+  sound.setRolloffFactor(1.5); // How quickly the sound fades with distance
+  
+  // Create a temporary object to hold the sound at the proper position
+  const soundObj = new THREE.Object3D();
+  soundObj.position.copy(position);
+  soundObj.add(sound);
+  scene.add(soundObj);
+  
+  // Play the sound
+  sound.play();
+  
+  // Remove the sound object after it finishes playing
+  sound.onEnded = () => {
+    scene.remove(soundObj);
+  };
+}
+
+// Play ammo pickup sound (non-positional, only for local player)
+function playAmmoPickupSound() {
+  if (!audioInitialized || !audioListener || !ammoPickupBuffer) return;
+  
+  // Create a non-positional audio source (attached to listener)
+  const sound = new THREE.Audio(audioListener);
+  sound.setBuffer(ammoPickupBuffer);
+  sound.setVolume(0.7);
+  
+  // Play the sound
+  sound.play();
+}
+
+// Play zombie bite sound (non-positional, only for local player)
+function playZombieBiteSound() {
+  if (!audioInitialized || !audioListener || !zombieBiteBuffer) return;
+  
+  // Create a non-positional audio source (attached to listener)
+  const sound = new THREE.Audio(audioListener);
+  sound.setBuffer(zombieBiteBuffer);
+  sound.setVolume(0.8);
+  
+  // Play the sound
+  sound.play();
+}
+
 // Initialize game
 function init() {
   initThree();
+  initAudio(); // Initialize audio system
   const ui = setupUI();
   setupSocketEvents(ui);
   addAmmoPickupStyles();
@@ -2582,3 +2690,11 @@ function showGameMessage(text, color = '#ffffff') {
     }
   }, 5500);
 }
+
+// Add user interaction to initialize audio
+document.addEventListener('click', () => {
+  // Many browsers require user interaction to start audio context
+  if (audioContext && audioContext.state === 'suspended') {
+    audioContext.resume();
+  }
+}, { once: true });
