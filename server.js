@@ -744,3 +744,204 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// Add at the top of your server file (after existing variables)
+let autoRoomId = null;
+
+// Add this handler for automatically joining games
+io.on('connection', (socket) => {
+  // ...existing connection code...
+
+  // Handle automatic room joining/creation
+  socket.on('autoJoinGame', (data) => {
+    const playerName = data.playerName || 'Player';
+    
+    // Store player name
+    socket.playerName = playerName;
+    
+    // Check if an auto room exists and is not full
+    if (!autoRoomId || !rooms[autoRoomId]) {
+      // Create a new room
+      const roomId = generateRoomId();
+      autoRoomId = roomId;
+      
+      // Create room with default name
+      createRoom(roomId, `${playerName}'s Game`);
+      console.log(`Auto-created new room ${roomId}`);
+      
+      // Join the room
+      joinRoom(socket, roomId);
+      
+      // Broadcast message to room
+      io.to(roomId).emit('gameMessage', {
+        text: `${playerName} created the game`,
+        color: '#4CAF50'
+      });
+    } else {
+      // Join existing auto room
+      joinRoom(socket, autoRoomId);
+      
+      // Broadcast message to room
+      io.to(autoRoomId).emit('gameMessage', {
+        text: `${playerName} joined the game`,
+        color: '#4CAF50'
+      });
+    }
+  });
+  
+  // Include player name when joining rooms
+  socket.on('joinRoom', (roomId, roomName) => {
+    // Get player's name
+    const playerName = socket.playerName || 'Player';
+    
+    // ...existing joinRoom handling...
+    
+    // When notifying other clients about a new player, include the name
+    socket.to(roomId).emit('playerJoined', {
+      id: socket.id,
+      position: { x: spawnPoint.x, y: 0, z: spawnPoint.z },
+      rotation: 0,
+      color: playerColor,
+      health: 100,
+      name: playerName  // Add player name to the data sent
+    });
+  });
+
+  // Handle disconnection - include player name in the left notification
+  socket.on('disconnect', () => {
+    const roomId = socket.roomId;
+    if (roomId && rooms[roomId]) {
+      // Send playerId and name if available
+      socket.to(roomId).emit('playerLeft', {
+        id: socket.id,
+        name: socket.playerName
+      });
+      
+      // ...existing disconnect handling...
+      
+      // If this was the last player in the auto room, clear the auto room ID
+      if (autoRoomId === roomId && Object.keys(rooms[roomId].players).length === 0) {
+        autoRoomId = null;
+      }
+    }
+  });
+  
+  // ...existing socket handlers...
+});
+
+// Create a function to generate unique room IDs
+function generateRoomId() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+// Create a room with the given ID and name
+function createRoom(roomId, roomName) {
+  const generatedMap = generateMap();
+  rooms[roomId] = {
+    id: roomId, // Add id to room object for easier access
+    players: {},
+    projectiles: [],
+    enemies: [],
+    zombies: [], // Initialize zombies array
+    roomName: roomName || `Game ${roomId.substring(0, 6)}`,
+    map: generatedMap,
+    mapSize: MAP_SIZE, // Store map size for boundary checks
+    lastZombieUpdate: Date.now(), // Initialize timestamp for zombie movement calculations
+    ammoPickups: createAmmoPickups(MAP_SIZE) // Initialize ammo pickups
+  };
+  
+  // Initialize zombies for the new room
+  zombieLogic.initializeZombiesForRoom(rooms[roomId], checkMapCollisions);
+  
+  return rooms[roomId];
+}
+
+// Function to join a player to a room
+function joinRoom(socket, roomId) {
+  // Join the socket to the room
+  socket.join(roomId);
+  
+  // Get or use default player name
+  const playerName = socket.playerName || 'Player';
+  
+  // Generate random spawn point (avoid spawning inside objects)
+  const spawnPoint = getRandomSpawnPoint(rooms[roomId]);
+  
+  // Generate random player color
+  const playerColor = getRandomColor();
+  
+  // Create player with name
+  const player = playerLogic.createPlayer(socket.id);
+  player.position = spawnPoint;
+  player.name = playerName;
+  player.color = playerColor;
+  
+  // Add player to room
+  rooms[roomId].players[socket.id] = player;
+  
+  // Store room ID in socket for reference
+  socket.roomId = roomId;
+  
+  // Send current room state to the new player
+  socket.emit('gameState', rooms[roomId]);
+  
+  // Also explicitly send initial ammo state
+  socket.emit('ammoUpdate', { 
+    ammo: player.ammo, 
+    weapon: player.weapon 
+  });
+  
+  // Notify other players about the new player
+  socket.to(roomId).emit('playerJoined', {
+    id: socket.id,
+    position: player.position,
+    rotation: player.rotation || 0,
+    color: playerColor,
+    health: player.health || 100,
+    name: playerName
+  });
+  
+  console.log(`Player ${socket.id} (${playerName}) joined room ${roomId}`);
+  
+  // Broadcast updated room list to all clients
+  io.emit('roomsUpdated');
+}
+
+// Function to get a random spawn point for a player
+function getRandomSpawnPoint(room) {
+  const margin = 10; // Distance from map edge
+  const maxAttempts = 10; // Maximum attempts to find a clear spawn
+  let attempts = 0;
+  
+  while (attempts < maxAttempts) {
+    // Generate random position within map bounds
+    const position = {
+      x: Math.random() * ((MAP_SIZE - margin) * 2) - (MAP_SIZE - margin),
+      y: 0,
+      z: Math.random() * ((MAP_SIZE - margin) * 2) - (MAP_SIZE - margin)
+    };
+    
+    // Create temp player to check for collisions
+    const tempPlayer = {
+      position: position,
+      id: 'temp'
+    };
+    
+    // Check for collisions
+    const collisionResult = checkMapCollisions(tempPlayer, room.map);
+    
+    // If no collision, return this position
+    if (!collisionResult.collision) {
+      return position;
+    }
+    
+    attempts++;
+  }
+  
+  // If all attempts failed, return a position near the center
+  return {
+    x: (Math.random() * 6) - 3,
+    y: 0,
+    z: (Math.random() * 6) - 3
+  };
+}

@@ -581,6 +581,11 @@ function createPlayerMesh(player) {
   // Add to scene
   scene.add(playerGroup);
   
+  // If player has a name, add it as user data
+  if (player.name) {
+    playerGroup.userData.playerName = player.name;
+  }
+  
   return playerGroup;
 }
 
@@ -910,6 +915,7 @@ function animate(time) {
   measureExecutionTime('animateAmmoPickups', animateAmmoPickups, cappedDeltaTime);
   measureExecutionTime('updateEntityFades', updateEntityFades); // Add this line
   measureExecutionTime('updateFogOfWar', updateFogOfWar); // Add this line
+  measureExecutionTime('updatePlayerNameTags', updatePlayerNameTags);
   
   // Update camera to follow local player
   if (localPlayer && gameActive) {
@@ -986,7 +992,200 @@ function setupUI() {
   const tabs = document.querySelectorAll('.tab');
   const tabContents = document.querySelectorAll('.tab-content');
   
-  // Add weapon and ammo UI elements
+  // Create name prompt overlay
+  const namePromptOverlay = document.createElement('div');
+  namePromptOverlay.id = 'name-prompt-overlay';
+  namePromptOverlay.innerHTML = `
+    <div class="name-prompt-container">
+      <h2>Enter Your Name</h2>
+      <input type="text" id="player-name-input" placeholder="Your Name" maxlength="15" />
+      <button id="confirm-name-btn">Play</button>
+    </div>
+  `;
+  document.body.appendChild(namePromptOverlay);
+  
+  // Add CSS for name prompt
+  const namePromptStyle = document.createElement('style');
+  namePromptStyle.textContent = `
+    #name-prompt-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 2000;
+    }
+    
+    .name-prompt-container {
+      background: #333;
+      padding: 30px;
+      border-radius: 10px;
+      text-align: center;
+      color: white;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+      width: 300px;
+    }
+    
+    #player-name-input {
+      width: 100%;
+      padding: 10px;
+      margin: 15px 0;
+      font-size: 16px;
+      border: none;
+      border-radius: 5px;
+      background: #222;
+      color: white;
+    }
+    
+    #confirm-name-btn {
+      background: #4CAF50;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: 5px;
+      transition: background 0.3s;
+    }
+    
+    #confirm-name-btn:hover {
+      background: #45a049;
+    }
+    
+    /* Player name tag styles */
+    .player-name-tag {
+      position: absolute;
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 12px;
+      padding: 2px 5px;
+      background: rgba(0, 0, 0, 0.6);
+      border-radius: 3px;
+      pointer-events: none;
+      text-align: center;
+      transform: translate(-50%, -100%);
+      margin-top: -10px;
+      white-space: nowrap;
+    }
+  `;
+  document.head.appendChild(namePromptStyle);
+  
+  // Set up player name confirmation
+  const playerNameInput = document.getElementById('player-name-input');
+  const confirmNameBtn = document.getElementById('confirm-name-btn');
+  
+  // Focus the input when showing the overlay
+  playerNameInput.focus();
+  
+  // Handle name confirmation
+  function confirmPlayerName() {
+    const playerName = playerNameInput.value.trim();
+    if (playerName) {
+      // Store player name
+      localStorage.setItem('playerName', playerName);
+      
+      // Hide the name prompt
+      namePromptOverlay.style.display = 'none';
+      
+      // Connect to automatic game session
+      connectToAutoGame();
+    } else {
+      // Shake the input if empty
+      playerNameInput.classList.add('shake');
+      setTimeout(() => playerNameInput.classList.remove('shake'), 500);
+    }
+  }
+  
+  // Event listeners for name confirmation
+  confirmNameBtn.addEventListener('click', confirmPlayerName);
+  playerNameInput.addEventListener('keyup', (event) => {
+    if (event.key === 'Enter') confirmPlayerName();
+  });
+  
+  // Function to connect to automatic game room
+  function connectToAutoGame() {
+    // Hide original game join UI
+    joinGameDiv.style.display = 'none';
+    
+    // Show loading indicator
+    const loadingOverlay = document.createElement('div');
+    loadingOverlay.id = 'loading-overlay';
+    loadingOverlay.innerHTML = '<div class="loading-spinner"></div><p>Connecting to game...</p>';
+    document.body.appendChild(loadingOverlay);
+    
+    // Add loading spinner styles
+    const loadingStyle = document.createElement('style');
+    loadingStyle.textContent = `
+      #loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.7);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 1500;
+        color: white;
+      }
+      
+      .loading-spinner {
+        border: 5px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top: 5px solid #fff;
+        width: 50px;
+        height: 50px;
+        animation: spin 1s linear infinite;
+        margin-bottom: 20px;
+      }
+      
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      
+      .shake {
+        animation: shake 0.5s;
+      }
+      
+      @keyframes shake {
+        0%, 100% { transform: translateX(0); }
+        10%, 30%, 50%, 70%, 90% { transform: translateX(-5px); }
+        20%, 40%, 60%, 80% { transform: translateX(5px); }
+      }
+    `;
+    document.head.appendChild(loadingStyle);
+    
+    // Get player name
+    const playerName = localStorage.getItem('playerName');
+    
+    // Emit auto join request to server
+    socket.emit('autoJoinGame', { playerName });
+    
+    // Once we receive the game state, remove loading overlay
+    socket.once('gameState', () => {
+      if (loadingOverlay.parentNode) {
+        document.body.removeChild(loadingOverlay);
+      }
+      document.getElementById('game-ui').style.display = 'flex';
+      gameActive = true;
+    });
+  }
+  
+  // Check if player name already exists
+  const savedName = localStorage.getItem('playerName');
+  if (savedName) {
+    // Pre-fill the input
+    playerNameInput.value = savedName;
+  }
+  
+  // Add weapon and ammo UI elements 
   const gameUI = document.createElement('div');
   gameUI.id = 'game-ui';
   gameUI.innerHTML = `
@@ -1000,7 +1199,7 @@ function setupUI() {
   `;
   document.body.appendChild(gameUI);
   
-  // Add CSS for the weapon display
+  // Add CSS for the weapon display and fix room UI positioning
   const style = document.createElement('style');
   style.textContent = `
     #game-ui {
@@ -1052,12 +1251,58 @@ function setupUI() {
       0%, 100% { opacity: 1; }
       50% { opacity: 0; }
     }
+    
+    /* Fix for the join game UI positioning - center it on screen */
+    #join-game {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    
+    /* Add styling for the actual container of the form elements */
+    .join-game-container {
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 20px;
+      border-radius: 10px;
+      max-width: 600px;
+      width: 90%;
+    }
+    
+    /* Ensure tab content is properly contained */
+    .tab-content {
+      max-height: 60vh;
+      overflow-y: auto;
+    }
   `;
   document.head.appendChild(style);
   
   // Hide game UI initially
   gameUI.style.display = 'none';
   
+  // If the join-game UI doesn't have a container, wrap its contents
+  if (!document.querySelector('.join-game-container')) {
+    // Save the current inner HTML
+    const currentContent = joinGameDiv.innerHTML;
+    
+    // Replace with wrapped content
+    joinGameDiv.innerHTML = `<div class="join-game-container">${currentContent}</div>`;
+    
+    // Re-query elements that might have been lost in the DOM manipulation
+    if (tabs.length === 0) {
+      tabs = document.querySelectorAll('.tab');
+    }
+    if (tabContents.length === 0) {
+      tabContents = document.querySelectorAll('.tab-content');
+    }
+  }
+
   // Tab switching
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
@@ -1138,6 +1383,7 @@ function setupUI() {
             socket.emit('joinRoom', roomId);
             joinGameDiv.style.display = 'none';
             gameActive = true;
+            document.getElementById('game-ui').style.display = 'flex';
           });
         });
       })
@@ -1190,6 +1436,11 @@ function setupSocketEvents(ui) {
       }
     }
     
+    // Ensure game UI is displayed when game state is received
+    document.getElementById('join-game').style.display = 'none';
+    document.getElementById('game-ui').style.display = 'flex';
+    gameActive = true;
+    
     // Create meshes for all existing zombies
     if (state.zombies) {
       for (const zombie of state.zombies) {
@@ -1230,10 +1481,15 @@ function setupSocketEvents(ui) {
   socket.on('playerJoined', (player) => {
     // Only create if we don't already have this player
     if (!players[player.id]) {
-      console.log('Player joined:', player.id);
+      console.log('Player joined:', player.id, player.name);
       
       const playerMesh = createPlayerMesh(player);
       fadeInEntity(playerMesh);
+      
+      // Add player name tag
+      if (player.name) {
+        addPlayerNameTag(playerMesh, player.name);
+      }
       
       players[player.id] = {
         mesh: playerMesh,
@@ -1245,15 +1501,26 @@ function setupSocketEvents(ui) {
       
       // Ensure the mesh userData has correct walking state
       players[player.id].mesh.userData.walking = false;
+      
+      // Display welcome message for new players
+      showGameMessage(`${player.name || 'A player'} has joined the game!`, '#4CAF50');
     }
   });
   
   // Player left
-  socket.on('playerLeft', (playerId) => {
+  socket.on('playerLeft', (data) => {
+    const playerId = typeof data === 'string' ? data : data.id;
+    const playerName = typeof data === 'string' ? players[data]?.data?.name : data.name;
+    
     console.log('Player left:', playerId);
     if (players[playerId]) {
       scene.remove(players[playerId].mesh);
       delete players[playerId];
+      
+      // Show player left message if we have their name
+      if (playerName) {
+        showGameMessage(`${playerName} has left the game`, '#ff6347');
+      }
     }
   });
   
@@ -2195,4 +2462,123 @@ function toggleFogOfWar() {
     const status = fogOfWarMesh.visible ? 'Active' : 'Disabled';
     infoPanel.innerHTML = infoPanel.innerHTML.replace(/Active|Disabled/, status);
   }
+}
+
+// Add a floating name tag above player
+function addPlayerNameTag(playerMesh, name) {
+  // Create HTML element for the name tag
+  const nameTag = document.createElement('div');
+  nameTag.className = 'player-name-tag';
+  nameTag.textContent = name;
+  nameTag.style.opacity = '0';
+  document.body.appendChild(nameTag);
+  
+  // Store reference to DOM element
+  playerMesh.userData.nameTagElement = nameTag;
+  
+  // Make name tag fade in
+  setTimeout(() => {
+    nameTag.style.opacity = '1';
+    nameTag.style.transition = 'opacity 0.3s ease-in-out';
+  }, 100);
+}
+
+// Update player name tags positions in the animation loop
+function updatePlayerNameTags() {
+  for (const playerId in players) {
+    const playerMesh = players[playerId].mesh;
+    const nameTagElement = playerMesh.userData.nameTagElement;
+    
+    if (playerMesh && nameTagElement) {
+      // Convert 3D position to screen position
+      const position = playerMesh.position.clone();
+      position.y += 2.2; // Position above player's head
+      
+      const screenPos = worldToScreen(position);
+      
+      // Update the name tag position
+      nameTagElement.style.left = screenPos.x + 'px';
+      nameTagElement.style.top = screenPos.y + 'px';
+    }
+  }
+}
+
+// Convert world position to screen position
+function worldToScreen(position) {
+  const vector = position.clone();
+  vector.project(camera);
+  
+  const halfWidth = window.innerWidth / 2;
+  const halfHeight = window.innerHeight / 2;
+  
+  return {
+    x: (vector.x * halfWidth) + halfWidth,
+    y: -(vector.y * halfHeight) + halfHeight
+  };
+}
+
+// Show game messages (chat, notifications, etc.)
+function showGameMessage(text, color = '#ffffff') {
+  const messagesContainer = document.getElementById('game-messages');
+  
+  // Create container if it doesn't exist
+  if (!messagesContainer) {
+    const container = document.createElement('div');
+    container.id = 'game-messages';
+    container.style.cssText = `
+      position: absolute;
+      left: 20px;
+      bottom: 100px;
+      width: 300px;
+      max-height: 200px;
+      overflow-y: auto;
+      color: white;
+      font-family: Arial, sans-serif;
+      z-index: 1000;
+      pointer-events: none;
+    `;
+    document.body.appendChild(container);
+  }
+  
+  // Create message element
+  const messageElement = document.createElement('div');
+  messageElement.style.cssText = `
+    margin-bottom: 5px;
+    padding: 5px 10px;
+    background: rgba(0, 0, 0, 0.6);
+    border-radius: 4px;
+    border-left: 3px solid ${color};
+    animation: fadeIn 0.3s, fadeOut 0.5s 5s forwards;
+    word-wrap: break-word;
+  `;
+  messageElement.textContent = text;
+  
+  // Add animation styles if they don't exist
+  if (!document.getElementById('message-animations')) {
+    const style = document.createElement('style');
+    style.id = 'message-animations';
+    style.textContent = `
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes fadeOut {
+        to { opacity: 0; max-height: 0; margin: 0; padding: 0; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+  
+  // Add to container
+  document.getElementById('game-messages').appendChild(messageElement);
+  
+  // Auto-scroll to bottom
+  document.getElementById('game-messages').scrollTop = document.getElementById('game-messages').scrollHeight;
+  
+  // Remove after animation completes
+  setTimeout(() => {
+    if (messageElement.parentNode) {
+      messageElement.parentNode.removeChild(messageElement);
+    }
+  }, 5500);
 }
