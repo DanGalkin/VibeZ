@@ -68,6 +68,12 @@ const clientPerformance = {
 let lastMouseGroundPosition = new THREE.Vector3();
 let mouseHasMoved = false;
 
+// Add variables for fog of war visualization
+let fogOfWarMesh = null;
+const FOG_COLOR = 0x000000; // Black fog
+const FOG_OPACITY = 0.5;    // Semi-transparent
+const FOG_HEIGHT = 0.2;     // Just above ground level
+
 // Function to measure execution time of a function
 function measureExecutionTime(funcName, func, ...args) {
   const startTime = performance.now();
@@ -239,6 +245,9 @@ function setupControls() {
       case 'KeyD':
       case 'ArrowRight':
         keys.right = true;
+        break;
+      case 'KeyF': // Press F to toggle fog of war visualization
+        if (gameActive) toggleFogOfWar();
         break;
     }
     
@@ -899,6 +908,8 @@ function animate(time) {
   measureExecutionTime('animatePlayers', animatePlayers, cappedDeltaTime);
   measureExecutionTime('animateZombies', animateZombies, zombies, cappedDeltaTime);
   measureExecutionTime('animateAmmoPickups', animateAmmoPickups, cappedDeltaTime);
+  measureExecutionTime('updateEntityFades', updateEntityFades); // Add this line
+  measureExecutionTime('updateFogOfWar', updateFogOfWar); // Add this line
   
   // Update camera to follow local player
   if (localPlayer && gameActive) {
@@ -1217,18 +1228,24 @@ function setupSocketEvents(ui) {
   
   // New player joined
   socket.on('playerJoined', (player) => {
-    console.log('Player joined:', player.id);
-    console.log('Player color:', player.color); // Log the player's color
-    players[player.id] = {
-      mesh: createPlayerMesh(player),
-      data: {
-        ...player,
-        moving: false // Explicitly initialize as not moving
-      }
-    };
-    
-    // Ensure the mesh userData has correct walking state
-    players[player.id].mesh.userData.walking = false;
+    // Only create if we don't already have this player
+    if (!players[player.id]) {
+      console.log('Player joined:', player.id);
+      
+      const playerMesh = createPlayerMesh(player);
+      fadeInEntity(playerMesh);
+      
+      players[player.id] = {
+        mesh: playerMesh,
+        data: {
+          ...player,
+          moving: false // Explicitly initialize as not moving
+        }
+      };
+      
+      // Ensure the mesh userData has correct walking state
+      players[player.id].mesh.userData.walking = false;
+    }
   });
   
   // Player left
@@ -1342,23 +1359,50 @@ function setupSocketEvents(ui) {
   
   // Zombie updates
   socket.on('zombiesUpdate', (updatedZombies) => {
+    // Track IDs of zombies in the update
+    const updatedIds = new Set(updatedZombies.map(z => z.id));
+    
+    // Handle zombies that are no longer visible
+    for (const zombieId in zombies) {
+      if (!updatedIds.has(zombieId)) {
+        fadeOutEntity(zombies[zombieId].mesh, () => {
+          if (zombies[zombieId]) {
+            scene.remove(zombies[zombieId].mesh);
+            delete zombies[zombieId];
+          }
+        });
+      }
+    }
+    
+    // Update or add visible zombies
     for (const zombie of updatedZombies) {
       if (zombies[zombie.id]) {
+        // Update existing zombie
+        const zombieMesh = zombies[zombie.id].mesh;
+        
+        // Cancel any fade out in progress
+        if (zombieMesh.userData.fading && zombieMesh.userData.fadeTarget === 0.0) {
+          zombieMesh.userData.fading = false;
+          setEntityOpacity(zombieMesh, 1.0);
+        }
+        
         // Update position and rotation
-        zombies[zombie.id].mesh.position.set(
+        zombieMesh.position.set(
           zombie.position.x,
           zombie.position.y || 0,
           zombie.position.z
         );
-        zombies[zombie.id].mesh.rotation.y = zombie.rotation;
+        zombieMesh.rotation.y = zombie.rotation;
         
         // Update state
-        zombies[zombie.id].mesh.userData.state = zombie.state;
+        zombieMesh.userData.state = zombie.state;
         zombies[zombie.id].data = zombie;
       } else {
-        // Create if doesn't exist
+        // New visible zombie - create and fade in
         const zombieMesh = createZombieMesh(zombie);
-        scene.add(zombieMesh); // Add the mesh to the scene
+        fadeInEntity(zombieMesh);
+        scene.add(zombieMesh);
+        
         zombies[zombie.id] = {
           mesh: zombieMesh,
           data: zombie
@@ -1416,6 +1460,8 @@ function setupSocketEvents(ui) {
     for (const pickup of pickups) {
       if (!ammoPickups[pickup.id]) {
         const pickupMesh = createAmmoPickupMesh(pickup);
+        fadeInEntity(pickupMesh);
+        
         ammoPickups[pickup.id] = {
           mesh: pickupMesh,
           data: pickup
@@ -1426,87 +1472,160 @@ function setupSocketEvents(ui) {
   
   // Update game state from server - fix animation bug for other players
   socket.on('gameStateUpdate', (state) => {
-    // Update player positions based on server state
+    // Track visible player IDs to detect players that are no longer visible
+    const visiblePlayerIds = Object.keys(state.players);
+    
+    // Handle players that are no longer visible
+    for (const playerId in players) {
+      // Skip local player - they're always visible
+      if (playerId === socket.id) continue;
+      
+      // If a player is no longer in the visible list, fade them out
+      if (!visiblePlayerIds.includes(playerId)) {
+        fadeOutEntity(players[playerId].mesh, () => {
+          // Remove the player from scene after fade out completes
+          if (players[playerId] && players[playerId].mesh) {
+            scene.remove(players[playerId].mesh);
+            delete players[playerId];
+          }
+        });
+      }
+    }
+    
+    // Update or add visible players
     for (const playerId in state.players) {
-      if (playerId !== socket.id && players[playerId]) {
-        const serverPlayer = state.players[playerId];
-        
-        // Only update the walking state if we have mesh and userData
-        if (players[playerId].mesh && players[playerId].mesh.userData) {
-          // Explicitly check for server's moving flag to be true
-          players[playerId].mesh.userData.walking = serverPlayer.moving === true;
-        }
-        
-        // Update the rest of the player data
-        players[playerId].data = serverPlayer;
-      }
-    }
-    
-    // Update zombie positions if needed
-    if (state.zombies) {
-      for (const zombie of state.zombies) {
-        if (zombies[zombie.id]) {
-          // Update existing zombie's data
-          zombies[zombie.id].data = zombie;
-        } else {
-          // Create new zombie if it doesn't exist
-          const zombieMesh = createZombieMesh(zombie);
-          scene.add(zombieMesh); // Add the mesh to the scene
-          zombies[zombie.id] = {
-            mesh: zombieMesh,
-            data: zombie
-          };
-        }
-      }
+      // Skip self - handled separately
+      if (playerId === socket.id) continue;
       
-      // Remove zombies that no longer exist
-      for (const zombieId in zombies) {
-        if (!state.zombies.some(z => z.id === zombieId)) {
-          removeZombie(zombieId, zombies, scene);
+      const serverPlayer = state.players[playerId];
+      
+      if (players[playerId]) {
+        // Player already exists - update them
+        const playerMesh = players[playerId].mesh;
+        
+        // If they were fading out, stop the fade
+        if (playerMesh.userData.fading && playerMesh.userData.fadeTarget === 0.0) {
+          playerMesh.userData.fading = false;
+          setEntityOpacity(playerMesh, 1.0);
         }
-      }
-    }
-    
-    // Update projectile positions based on server state
-    for (const projectile of state.projectiles) {
-      if (projectiles[projectile.id]) {
-        projectiles[projectile.id].data = projectile;
-        projectiles[projectile.id].mesh.position.set(
-          projectile.position.x,
-          projectile.position.y,
-          projectile.position.z
+        
+        // Update position and rotation
+        playerMesh.position.set(
+          serverPlayer.position.x,
+          serverPlayer.position.y || 0,
+          serverPlayer.position.z
         );
-      }
-    }
-
-    // Update ammo pickups if needed
-    if (state.ammoPickups) {
-      // Remove pickups that no longer exist
-      for (const pickupId in ammoPickups) {
-        if (!state.ammoPickups.some(p => p.id === pickupId)) {
-          removeAmmoPickup(pickupId);
+        playerMesh.rotation.y = serverPlayer.rotation || 0;
+        
+        // Update walking state
+        if (playerMesh.userData) {
+          playerMesh.userData.walking = serverPlayer.moving === true;
         }
+        
+        // Update data
+        players[playerId].data = serverPlayer;
+      } else {
+        // Player is newly visible - create and fade in
+        const newPlayerMesh = createPlayerMesh(serverPlayer);
+        fadeInEntity(newPlayerMesh);
+        
+        players[playerId] = {
+          mesh: newPlayerMesh,
+          data: serverPlayer
+        };
       }
-      
-      // Add new pickups
-      for (const pickup of state.ammoPickups) {
-        if (!ammoPickups[pickup.id]) {
-          const pickupMesh = createAmmoPickupMesh(pickup);
-          ammoPickups[pickup.id] = {
-            mesh: pickupMesh,
-            data: pickup
-          };
+    }
+    
+    // Handle zombies visibility similarly
+    const visibleZombieIds = state.zombies.map(z => z.id);
+    
+    // Fade out zombies that are no longer visible
+    for (const zombieId in zombies) {
+      if (!visibleZombieIds.includes(zombieId)) {
+        fadeOutEntity(zombies[zombieId].mesh, () => {
+          if (zombies[zombieId]) {
+            scene.remove(zombies[zombieId].mesh);
+            delete zombies[zombieId];
+          }
+        });
+      }
+    }
+    
+    // Update or add visible zombies
+    for (const zombie of state.zombies) {
+      if (zombies[zombie.id]) {
+        // Zombie already exists - update it
+        const zombieMesh = zombies[zombie.id].mesh;
+        
+        // If it was fading out, cancel the fade
+        if (zombieMesh.userData.fading && zombieMesh.userData.fadeTarget === 0.0) {
+          zombieMesh.userData.fading = false;
+          setEntityOpacity(zombieMesh, 1.0);
         }
+        
+        // Update position and rotation
+        zombieMesh.position.set(
+          zombie.position.x,
+          zombie.position.y || 0,
+          zombie.position.z
+        );
+        zombieMesh.rotation.y = zombie.rotation || 0;
+        
+        // Update state
+        zombieMesh.userData.state = zombie.state;
+        zombies[zombie.id].data = zombie;
+      } else {
+        // New visible zombie - create and fade in
+        const zombieMesh = createZombieMesh(zombie);
+        fadeInEntity(zombieMesh);
+        scene.add(zombieMesh);
+        
+        zombies[zombie.id] = {
+          mesh: zombieMesh,
+          data: zombie
+        };
       }
     }
-
-    // Update local player's ammo from server state
-    if (state.players && state.players[socket.id]) {
-      const serverAmmo = state.players[socket.id].ammo;
-      if (typeof serverAmmo === 'number' && serverAmmo !== playerAmmo) {
-        updateAmmoDisplay(serverAmmo);
+    
+    // Handle ammo pickup visibility
+    const visiblePickupIds = state.ammoPickups.map(p => p.id);
+    
+    // Fade out pickups that are no longer visible
+    for (const pickupId in ammoPickups) {
+      if (!visiblePickupIds.includes(pickupId)) {
+        fadeOutEntity(ammoPickups[pickupId].mesh, () => {
+          if (ammoPickups[pickupId]) {
+            scene.remove(ammoPickups[pickupId].mesh);
+            delete ammoPickups[pickupId];
+          }
+        });
       }
     }
+    
+    // Update or add visible pickups
+    for (const pickup of state.ammoPickups) {
+      if (ammoPickups[pickup.id]) {
+        // Pickup already exists - update if needed
+        const pickupMesh = ammoPickups[pickup.id].mesh;
+        
+        // If it was fading out, cancel the fade
+        if (pickupMesh.userData.fading && pickupMesh.userData.fadeTarget === 0.0) {
+          pickupMesh.userData.fading = false;
+          setEntityOpacity(pickupMesh, 1.0);
+        }
+      } else {
+        // New visible pickup - create and fade in
+        const pickupMesh = createAmmoPickupMesh(pickup);
+        fadeInEntity(pickupMesh);
+        
+        ammoPickups[pickup.id] = {
+          mesh: pickupMesh,
+          data: pickup
+        };
+      }
+    }
+    
+    // ...existing code for ammo update...
   });
 
   // Room not found
@@ -1740,6 +1859,14 @@ function init() {
   const ui = setupUI();
   setupSocketEvents(ui);
   addAmmoPickupStyles();
+  addFogOfWarDebugPanel();
+  
+  // Create fog of war after a brief delay to ensure all other elements are initialized
+  setTimeout(() => {
+    if (!fogOfWarMesh) {
+      createFogOfWarVisualization();
+    }
+  }, 100);
   
   // Add initial setup for performance monitors
   updatePerformanceDisplay();
@@ -1750,3 +1877,322 @@ function init() {
 
 // Start the game when page loads
 window.addEventListener('load', init);
+
+// Add these functions for entity visibility management
+function fadeInEntity(mesh) {
+  // Set initial opacity
+  setEntityOpacity(mesh, 0);
+  
+  // Set up fade animation
+  mesh.userData.fading = true;
+  mesh.userData.fadeStartTime = performance.now();
+  mesh.userData.fadeDuration = 300; // milliseconds
+  mesh.userData.fadeTarget = 1.0; // fully visible
+  
+  // Store original materials
+  if (mesh.type === 'Group') {
+    storeOriginalMaterials(mesh);
+  }
+}
+
+function fadeOutEntity(mesh, callback) {
+  // Skip if already fading or not in scene
+  if (!mesh || mesh.userData.fading) return;
+  
+  // Set up fade out animation
+  mesh.userData.fading = true;
+  mesh.userData.fadeStartTime = performance.now();
+  mesh.userData.fadeDuration = 300; // milliseconds
+  mesh.userData.fadeTarget = 0.0; // fully transparent
+  mesh.userData.fadeCallback = callback; // function to call after fade out
+}
+
+function storeOriginalMaterials(mesh) {
+  mesh.userData.originalMaterials = [];
+  
+  // Store all materials in the mesh hierarchy
+  mesh.traverse(child => {
+    if (child.isMesh && child.material) {
+      if (Array.isArray(child.material)) {
+        child.userData.originalMaterials = [...child.material];
+      } else {
+        child.userData.originalMaterial = child.material;
+      }
+    }
+  });
+}
+
+function updateEntityFades() {
+  const now = performance.now();
+  
+  // Update player fades
+  for (const playerId in players) {
+    const mesh = players[playerId]?.mesh;
+    if (mesh && mesh.userData.fading) {
+      updateFade(mesh, now);
+    }
+  }
+  
+  // Update zombie fades
+  for (const zombieId in zombies) {
+    const mesh = zombies[zombieId]?.mesh;
+    if (mesh && mesh.userData.fading) {
+      updateFade(mesh, now);
+    }
+  }
+  
+  // Update pickup fades
+  for (const pickupId in ammoPickups) {
+    const mesh = ammoPickups[pickupId]?.mesh;
+    if (mesh && mesh.userData.fading) {
+      updateFade(mesh, now);
+    }
+  }
+}
+
+function updateFade(mesh, now) {
+  const elapsed = now - mesh.userData.fadeStartTime;
+  const progress = Math.min(elapsed / mesh.userData.fadeDuration, 1.0);
+  
+  // Calculate current opacity
+  let currentOpacity;
+  if (mesh.userData.fadeTarget === 0.0) {
+    // Fading out
+    currentOpacity = 1.0 - progress;
+  } else {
+    // Fading in
+    currentOpacity = progress;
+  }
+  
+  // Apply opacity
+  setEntityOpacity(mesh, currentOpacity);
+  
+  // Check if fade is complete
+  if (progress >= 1.0) {
+    mesh.userData.fading = false;
+    
+    // If this was a fade out and we have a callback
+    if (mesh.userData.fadeTarget === 0.0 && mesh.userData.fadeCallback) {
+      mesh.userData.fadeCallback();
+    }
+  }
+}
+
+function setEntityOpacity(mesh, opacity) {
+  if (!mesh) return;
+  
+  mesh.traverse(child => {
+    if (child.isMesh && child.material) {
+      if (Array.isArray(child.material)) {
+        child.material.forEach(mat => enableTransparency(mat, opacity));
+      } else {
+        enableTransparency(child.material, opacity);
+      }
+    }
+  });
+}
+
+function enableTransparency(material, opacity) {
+  if (!material) return;
+  
+  // Clone the material to avoid affecting shared materials
+  if (!material._isCloned) {
+    material = material.clone();
+    material._isCloned = true;
+  }
+  
+  material.transparent = true;
+  material.opacity = opacity;
+}
+
+// Add a debug info panel for fog of war
+function addFogOfWarDebugPanel() {
+  const style = document.createElement('style');
+  style.textContent = `
+    #fog-of-war-info {
+      position: absolute;
+      top: 60px;
+      left: 20px;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 12px;
+      pointer-events: none;
+      z-index: 1000;
+      font-family: monospace;
+    }
+  `;
+  document.head.appendChild(style);
+  
+  const infoPanel = document.createElement('div');
+  infoPanel.id = 'fog-of-war-info';
+  infoPanel.innerHTML = `Fog of War: Active<br>
+    Visible Players: 0<br>
+    Visible Zombies: 0<br>
+    Visible Pickups: 0<br>
+    <span style="opacity: 0.7">Press F to toggle visualization</span>`;
+  document.body.appendChild(infoPanel);
+  
+  // Update the panel regularly with visibility stats
+  setInterval(() => {
+    const visiblePlayers = Object.keys(players).length - 1; // Minus self
+    const visibleZombies = Object.keys(zombies).length;
+    const visiblePickups = Object.keys(ammoPickups).length;
+    
+    const visibilityStatus = fogOfWarMesh && fogOfWarMesh.visible ? 'Active' : 'Disabled';
+    
+    infoPanel.innerHTML = `Fog of War: ${visibilityStatus}<br>
+      Visible Players: ${visiblePlayers}<br>
+      Visible Zombies: ${visibleZombies}<br>
+      Visible Pickups: ${visiblePickups}<br>
+      <span style="opacity: 0.7">Press F to toggle visualization</span>`;
+  }, 500);
+}
+
+// Create fog of war visualization
+function createFogOfWarVisualization() {
+  // Create fog of war geometry - use more segments for better precision
+  const fogSize = MAP_SIZE * 2 + 20; // Make it larger than the map to cover all edges
+  const fogGeometry = new THREE.PlaneGeometry(fogSize, fogSize, 64, 64);
+  
+  // Create fog material with transparency
+  const fogMaterial = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false, // Don't write to depth buffer
+    depthTest: true,  // Still test against it
+    side: THREE.DoubleSide,
+    uniforms: {
+      fogColor: { value: new THREE.Color(FOG_COLOR) },
+      fogOpacity: { value: FOG_OPACITY },
+      playerPos: { value: new THREE.Vector2(0, 0) },
+      visibleRadius: { value: 3.0 },  // Exactly matching server's CLOSE_VISIBILITY_RADIUS
+      coneDirection: { value: new THREE.Vector2(1, 0) },
+      coneAngle: { value: Math.PI * (120/180) }, // Exactly matching server's angle
+      coneLength: { value: 15.0 },    // Exactly matching server's VISIBILITY_DISTANCE
+    },
+    vertexShader: `
+      varying vec2 vWorldPosition;
+      
+      void main() {
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPos.xz; // We only need the x and z coordinates
+        gl_Position = projectionMatrix * viewMatrix * worldPos;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 fogColor;
+      uniform float fogOpacity;
+      uniform vec2 playerPos;
+      uniform float visibleRadius;
+      uniform vec2 coneDirection;
+      uniform float coneAngle;
+      uniform float coneLength;
+      
+      varying vec2 vWorldPosition;
+      
+      void main() {
+        // Calculate vector from player to this fragment
+        vec2 fragToPlayer = playerPos - vWorldPosition; // Note: direction is reversed for calculation
+        float distance = length(fragToPlayer);
+        
+        // Start with full fog
+        float visibility = 0.0;
+        
+        // Check if in close radius (always visible)
+        if (distance < visibleRadius) {
+          visibility = 1.0;
+        }
+        // Check if in cone and within visibility distance
+        else if (distance < coneLength) {
+          // Only process if we have a valid direction vector
+          if (length(coneDirection) > 0.001) {
+            // Normalize vectors
+            vec2 toFragment = normalize(-fragToPlayer);
+            vec2 playerDir = normalize(coneDirection);
+            
+            // Calculate dot product between direction vectors
+            // This gives us cos(angle) between the vectors
+            float dotProduct = dot(playerDir, toFragment);
+            
+            // Calculate the angle. We use acos which returns radians
+            float angleBetween = acos(clamp(dotProduct, -1.0, 1.0));
+            
+            // Check if within the visibility cone
+            if (angleBetween < coneAngle * 0.5) {
+              // Inside the cone - visibility depends on distance
+              float distanceRatio = distance / coneLength;
+              
+              // Full visibility close to player, fading out as we reach cone edge
+              visibility = 1.0 - smoothstep(0.6, 0.9, distanceRatio);
+              
+              // Add a smoother edge as we approach the maximum angle
+              float angleRatio = angleBetween / (coneAngle * 0.5);
+              visibility *= 1.0 - smoothstep(0.7, 1.0, angleRatio);
+            }
+          }
+        }
+        
+        // Apply final fog calculation (inverse of visibility)
+        float alpha = fogOpacity * (1.0 - visibility);
+        
+        // Output the final color with calculated alpha
+        gl_FragColor = vec4(fogColor, alpha);
+      }
+    `
+  });
+
+  // Create the fog mesh
+  const fogMesh = new THREE.Mesh(fogGeometry, fogMaterial);
+  fogMesh.rotation.x = -Math.PI / 2; // Make it horizontal
+  fogMesh.position.y = 0.3; // Just above ground objects
+  fogMesh.renderOrder = 999; // Ensure it renders after all world objects
+  
+  scene.add(fogMesh);
+  fogOfWarMesh = fogMesh;
+  
+  return fogMesh;
+}
+
+// Update fog of war based on player position and direction
+function updateFogOfWar() {
+  if (!fogOfWarMesh || !localPlayer) return;
+  
+  // Get player position as Vector2 (x,z plane)
+  const playerPos = new THREE.Vector2(localPlayer.position.x, localPlayer.position.z);
+  
+  // Get exact player sight direction based on rotation
+  const playerAngle = localPlayer.rotation.y;
+  const dirX = Math.sin(playerAngle); // Using sin for x-component
+  const dirZ = Math.cos(playerAngle); // Using cos for z-component
+  const direction = new THREE.Vector2(dirX, dirZ);
+  
+  // Update shader uniforms
+  fogOfWarMesh.material.uniforms.playerPos.value.copy(playerPos);
+  fogOfWarMesh.material.uniforms.coneDirection.value.copy(direction);
+  
+  // Make sure fog follows the player (not the camera) for accurate coverage
+  fogOfWarMesh.position.x = localPlayer.position.x;
+  fogOfWarMesh.position.z = localPlayer.position.z;
+}
+
+// Enhance the toggle function for better feedback
+function toggleFogOfWar() {
+  if (!fogOfWarMesh) return;
+  
+  fogOfWarMesh.visible = !fogOfWarMesh.visible;
+  
+  // Add visual feedback when toggling
+  const flashColor = fogOfWarMesh.visible ? 0x004400 : 0x440000; // Green for on, Red for off
+  scene.background = new THREE.Color(flashColor);
+  setTimeout(() => {
+    scene.background = new THREE.Color(0x87ceeb); // Reset to sky blue
+  }, 150);
+  
+  // Update the debug panel text
+  const infoPanel = document.getElementById('fog-of-war-info');
+  if (infoPanel) {
+    const status = fogOfWarMesh.visible ? 'Active' : 'Disabled';
+    infoPanel.innerHTML = infoPanel.innerHTML.replace(/Active|Disabled/, status);
+  }
+}

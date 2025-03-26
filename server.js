@@ -325,6 +325,77 @@ function getRandomColor() {
   return (r << 16) | (g << 8) | b;
 }
 
+// Add this function after other utility functions
+function calculateVisibility(player, room) {
+  // Constants for visibility
+  const VISIBILITY_ANGLE = Math.PI * (120/180); // 120 degrees in radians
+  const VISIBILITY_DISTANCE = 15; // Units of visibility in direction of sight
+  const CLOSE_VISIBILITY_RADIUS = 3; // Units of visibility all around the player
+  
+  // Ensure player has a position and sight angle
+  if (!player.position || player.sightAngle === undefined) return;
+  
+  // Helper function to check if an entity is visible to the player
+  function isEntityVisible(entityPosition) {
+    // Calculate distance between player and entity
+    const dx = entityPosition.x - player.position.x;
+    const dz = entityPosition.z - player.position.z;
+    const distanceSquared = dx * dx + dz * dz;
+    
+    // Always visible if within close radius
+    if (distanceSquared <= CLOSE_VISIBILITY_RADIUS * CLOSE_VISIBILITY_RADIUS) {
+      return true;
+    }
+    
+    // Check if within max visibility distance
+    if (distanceSquared <= VISIBILITY_DISTANCE * VISIBILITY_DISTANCE) {
+      // Calculate angle between player's sight direction and entity
+      const angleToEntity = Math.atan2(dx, dz);
+      
+      // Get the difference between angles (normalize to [-PI, PI])
+      let angleDiff = angleToEntity - player.sightAngle;
+      while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+      while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+      
+      // Check if entity is within the visibility cone
+      return Math.abs(angleDiff) <= VISIBILITY_ANGLE / 2;
+    }
+    
+    return false;
+  }
+  
+  // Check visibility for all other players
+  for (const otherPlayerId in room.players) {
+    if (otherPlayerId === player.id) continue; // Skip self
+    
+    const otherPlayer = room.players[otherPlayerId];
+    
+    // Initialize visibleTo array if needed
+    if (!otherPlayer.visibleTo) otherPlayer.visibleTo = {};
+    
+    // Check if other player is visible to this player
+    otherPlayer.visibleTo[player.id] = isEntityVisible(otherPlayer.position);
+  }
+  
+  // Check visibility for all zombies
+  for (const zombie of room.zombies) {
+    // Initialize visibleTo array if needed
+    if (!zombie.visibleTo) zombie.visibleTo = {};
+    
+    // Check if zombie is visible to this player
+    zombie.visibleTo[player.id] = isEntityVisible(zombie.position);
+  }
+  
+  // Check visibility for all ammo pickups
+  for (const pickup of room.ammoPickups) {
+    // Initialize visibleTo array if needed
+    if (!pickup.visibleTo) pickup.visibleTo = {};
+    
+    // Check if pickup is visible to this player
+    pickup.visibleTo[player.id] = isEntityVisible(pickup.position);
+  }
+}
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
@@ -361,6 +432,19 @@ io.on('connection', (socket) => {
     
     // Create player using playerLogic
     const player = playerLogic.createPlayer(socket.id);
+    
+    // Initialize visibility for existing entities in the room
+    if (rooms[roomId].zombies) {
+      for (const zombie of rooms[roomId].zombies) {
+        if (!zombie.visibleTo) zombie.visibleTo = {};
+      }
+    }
+    
+    if (rooms[roomId].ammoPickups) {
+      for (const pickup of rooms[roomId].ammoPickups) {
+        if (!pickup.visibleTo) pickup.visibleTo = {};
+      }
+    }
     
     rooms[roomId].players[socket.id] = player;
     
@@ -555,29 +639,46 @@ setInterval(() => {
     // Update projectiles using weaponLogic - pass zombieLogic and checkMapCollisions
     weaponLogic.updateProjectiles(room, io, zombieLogic, checkMapCollisions);
     
+    // Calculate visibility for each player before sending game state updates
+    for (const playerId in room.players) {
+      calculateVisibility(room.players[playerId], room);
+    }
+    
     // Send updated game state to all players in the room (less frequently)
     if (Math.random() < 0.1) { // 10% chance, so roughly 6 times per second
-      // Make sure all player state properties are properly included
-      const cleanState = {
-        players: Object.fromEntries(
-          Object.entries(room.players).map(([id, player]) => [
-            id,
-            {
-              ...player,
-              // Explicitly ensure moving is a boolean
-              moving: player.moving === true,
-              // Explicitly include weapon and ammo properties
-              weapon: player.weapon,
-              ammo: player.ammo
-            }
-          ])
-        ),
-        projectiles: room.projectiles,
-        zombies: room.zombies,
-        ammoPickups: room.ammoPickups
-      };
-      
-      io.to(roomId).emit('gameStateUpdate', cleanState);
+      // For each player, send a personalized game state with only visible entities
+      for (const playerId in room.players) {
+        // Create player-specific filtered view of the game state
+        const cleanState = {
+          players: Object.fromEntries(
+            Object.entries(room.players)
+              .filter(([id, otherPlayer]) => {
+                // Always include the player themselves
+                if (id === playerId) return true;
+                
+                // Only include other players if visible to this player
+                return otherPlayer.visibleTo && otherPlayer.visibleTo[playerId];
+              })
+              .map(([id, player]) => [
+                id,
+                {
+                  ...player,
+                  // Explicitly ensure moving is a boolean
+                  moving: player.moving === true,
+                  // Explicitly include weapon and ammo properties
+                  weapon: player.weapon,
+                  ammo: player.ammo
+                }
+              ])
+          ),
+          projectiles: room.projectiles, // Projectiles are always visible
+          zombies: room.zombies.filter(zombie => zombie.visibleTo && zombie.visibleTo[playerId]),
+          ammoPickups: room.ammoPickups.filter(pickup => pickup.visibleTo && pickup.visibleTo[playerId])
+        };
+        
+        // Send personalized state update to this player
+        io.to(playerId).emit('gameStateUpdate', cleanState);
+      }
     }
   }
   
@@ -620,8 +721,21 @@ setInterval(() => {
     // Update zombies for this room
     zombieLogic.updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, checkMapCollisions);
     
-    // Broadcast zombie updates to clients
-    io.to(roomId).emit('zombiesUpdate', room.zombies);
+    // Calculate visibility for each player
+    for (const playerId in room.players) {
+      calculateVisibility(room.players[playerId], room);
+    }
+    
+    // Send personalized zombie updates to each player
+    for (const playerId in room.players) {
+      const visibleZombies = room.zombies.filter(zombie => 
+        zombie.visibleTo && zombie.visibleTo[playerId]);
+      
+      // Only send update if there are visible zombies
+      if (visibleZombies.length > 0) {
+        io.to(playerId).emit('zombiesUpdate', visibleZombies);
+      }
+    }
   }
 }, zombieLogic.ZOMBIE_UPDATE_INTERVAL);
 
