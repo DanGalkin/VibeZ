@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 // Constants for weapons and projectiles
 const PROJECTILE_SPEED = 0.5;
 const PROJECTILE_MAX_DISTANCE = 50;
-const PROJECTILE_DAMAGE = 10;
+const PROJECTILE_DAMAGE = 100;
 const PROJECTILE_COLLISION_RADIUS = 1;
 
 // Weapon configurations

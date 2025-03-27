@@ -1642,6 +1642,7 @@ function setupSocketEvents(ui) {
   
   // Zombie destroyed
   socket.on('zombieDestroyed', (zombieId) => {
+    createParticleBurst(zombies[zombieId].mesh.position);
     removeZombie(zombieId, zombies, scene);
   });
   
@@ -1702,7 +1703,9 @@ function setupSocketEvents(ui) {
   // Zombie hit
   socket.on('zombieHit', (data) => {
     if (zombies[data.id]) {
-      handleZombieHit(zombies[data.id]); // Using imported function
+      handleZombieHit(zombies[data.id]);
+      // Add particle burst at zombie position
+      createParticleBurst(zombies[data.id].mesh.position);
     }
   });
   
@@ -2698,3 +2701,77 @@ document.addEventListener('click', () => {
     audioContext.resume();
   }
 }, { once: true });
+
+function createParticleBurst(position, color = 0xFF0000, count = 20, duration = 1000) {
+  const particleGroup = new THREE.Group();
+  
+  // Create particles
+  for (let i = 0; i < count; i++) {
+    const geometry = new THREE.SphereGeometry(0.1, 4, 4);
+    const material = new THREE.MeshBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 1
+    });
+    
+    const particle = new THREE.Mesh(geometry, material);
+    
+    // Set initial position
+    particle.position.copy(position);
+    
+    // Random velocity in all directions
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.05 + Math.random() * 0.1;
+    const elevation = Math.random() * Math.PI - Math.PI/2;
+    
+    particle.userData = {
+      velocity: new THREE.Vector3(
+        Math.cos(angle) * Math.cos(elevation) * speed,
+        Math.sin(elevation) * speed,
+        Math.sin(angle) * Math.cos(elevation) * speed
+      ),
+      startTime: performance.now(),
+      duration: duration
+    };
+    
+    particleGroup.add(particle);
+  }
+  
+  scene.add(particleGroup);
+  
+  // Animate particles
+  function animateParticles() {
+    const now = performance.now();
+    let hasActiveParticles = false;
+    
+    particleGroup.children.forEach(particle => {
+      const elapsed = now - particle.userData.startTime;
+      const progress = elapsed / particle.userData.duration;
+      
+      if (progress < 1) {
+        // Update position
+        particle.position.add(particle.userData.velocity);
+        
+        // Add gravity effect
+        particle.userData.velocity.y -= 0.005;
+        
+        // Fade out
+        particle.material.opacity = 1 - progress;
+        
+        hasActiveParticles = true;
+      }
+    });
+    
+    if (hasActiveParticles) {
+      requestAnimationFrame(animateParticles);
+    } else {
+      scene.remove(particleGroup);
+      particleGroup.children.forEach(particle => {
+        particle.geometry.dispose();
+        particle.material.dispose();
+      });
+    }
+  }
+  
+  animateParticles();
+}
