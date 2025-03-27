@@ -915,11 +915,7 @@ function getRandomSpawnPoint(room) {
   
   while (attempts < maxAttempts) {
     // Generate random position within map bounds
-    const position = {
-      x: Math.random() * ((MAP_SIZE - margin) * 2) - (MAP_SIZE - margin),
-      y: 0,
-      z: Math.random() * ((MAP_SIZE - margin) * 2) - (MAP_SIZE - margin)
-    };
+    const position = playerLogic.generateEdgeSpawnPosition(room.mapSize);
     
     // Create temp player to check for collisions
     const tempPlayer = {
@@ -938,10 +934,10 @@ function getRandomSpawnPoint(room) {
     attempts++;
   }
   
-  // If all attempts failed, return a position near the center
+  // If all attempts failed, return a position near the corner
   return {
-    x: (Math.random() * 6) - 3,
+    x: 1,
     y: 0,
-    z: (Math.random() * 6) - 3
+    z: 1
   };
 }

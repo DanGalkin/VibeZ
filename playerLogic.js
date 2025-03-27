@@ -16,14 +16,64 @@ function getRandomColor() {
 }
 
 /**
+ * Generates a spawn position at the edge of the map
+ * @param {number} mapSize - The half-width/height of the map
+ * @returns {Object} Position object with x, y, z coordinates
+ */
+function generateEdgeSpawnPosition(mapSize = 50) {
+  // Set a smaller edge margin to ensure players spawn closer to the edge
+  const edgeMargin = 2;
+  
+  // Always spawn at edge (forced spawn at edges)
+  const edge = Math.floor(Math.random() * 4);
+  let position = { x: 0, y: 0, z: 0 };
+  
+  // Fixed spawn positions at edges
+  switch (edge) {
+    case 0: // Top edge
+      position.x = (Math.random() * 2 - 1) * mapSize;
+      position.z = -mapSize + edgeMargin;
+      break;
+    case 1: // Right edge
+      position.x = mapSize - edgeMargin;
+      position.z = (Math.random() * 2 - 1) * mapSize;
+      break;
+    case 2: // Bottom edge
+      position.x = (Math.random() * 2 - 1) * mapSize;
+      position.z = mapSize - edgeMargin;
+      break;
+    case 3: // Left edge
+      position.x = -mapSize + edgeMargin;
+      position.z = (Math.random() * 2 - 1) * mapSize;
+      break;
+  }
+
+  // Keep y position at ground level
+  position.y = 0;
+  
+  // Force position to be exactly at edge
+  if (Math.abs(position.x) > mapSize - edgeMargin) {
+    position.x = Math.sign(position.x) * (mapSize - edgeMargin);
+  }
+  if (Math.abs(position.z) > mapSize - edgeMargin) {
+    position.z = Math.sign(position.z) * (mapSize - edgeMargin);
+  }
+
+  return position;
+}
+
+/**
  * Creates a new player object
  * @param {string} socketId - The socket ID of the player
+ * @param {number} mapSize - The half-width/height of the map
  * @returns {Object} A new player object
  */
-function createPlayer(socketId) {
+function createPlayer(socketId, mapSize = 50) {
+  const spawnPosition =  { x: 0, y: 0, z: 0 } //generateSpawnPosition(mapSize);
+  console.log(`Creating a player at: ${JSON.stringify(spawnPosition)}`);
   return {
     id: socketId,
-    position: { x: Math.random() * 10 - 5, y: 0, z: Math.random() * 10 - 5 },
+    position: spawnPosition,
     rotation: 0,
     sightAngle: 0,
     moving: false,
@@ -103,5 +153,6 @@ module.exports = {
   PLAYER_SPEED,
   getRandomColor,
   createPlayer,
+  generateEdgeSpawnPosition, // Export the new function
   handlePlayerMovement
 };

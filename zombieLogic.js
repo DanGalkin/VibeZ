@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 // Constants for zombie enemies
 const MAX_ZOMBIES = 100;
 const ZOMBIE_SPEED = 2.0; // Units per second - distance a zombie walks in one second
-const ZOMBIE_DAMAGE = 5;
+const ZOMBIE_DAMAGE = 100;
 const ZOMBIE_HEALTH = 100;
 const ZOMBIE_UPDATE_INTERVAL = 30; // ms - how often to update zombie positions
 const ZOMBIE_ATTACK_RANGE = 1.2;
