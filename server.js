@@ -637,7 +637,7 @@ setInterval(() => {
     room.id = roomId;
     
     // Update projectiles using weaponLogic - pass zombieLogic and checkMapCollisions
-    weaponLogic.updateProjectiles(room, io, zombieLogic, checkMapCollisions);
+    weaponLogic.updateProjectiles(room, io, zombieLogic, checkMapCollisions, playerLogic);
     
     // Calculate visibility for each player before sending game state updates
     for (const playerId in room.players) {

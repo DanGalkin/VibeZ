@@ -1,5 +1,8 @@
 const { v4: uuidv4 } = require('uuid');
 
+// Import player logic
+const playerLogic = require('./playerLogic');
+
 // Constants for zombie enemies
 const MAX_ZOMBIES = 100;
 const ZOMBIE_SPEED = 2.0; // Units per second - distance a zombie walks in one second
@@ -360,15 +363,15 @@ function updateZombies(room, io, isWithinMapBoundaries, clampToMapBoundaries, ch
           // Attack player every second
           if (now - zombie.lastAttack > 1000) { // 1 second cooldown
             zombie.lastAttack = now;
-            
-            // Deal damage to player
-            targetPlayer.health -= ZOMBIE_DAMAGE;
-            
-            // Notify players about the hit
-            io.to(room.id).emit('playerHit', {
-              playerId: targetPlayer.id,
-              health: targetPlayer.health
-            });
+
+            playerLogic.handlePlayerHit(
+              targetPlayer,
+              room,
+              io,
+              ZOMBIE_DAMAGE,
+              'zombie',
+              zombie.id
+            );
           }
         } else if (distance < ZOMBIE_DETECTION_RANGE) {
           // We are in range but not close enough to attack - chase the player

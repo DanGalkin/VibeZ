@@ -30,7 +30,7 @@ function createProjectile(ownerId, position, direction) {
 }
 
 // Update projectiles in a room (movement, collisions, etc.)
-function updateProjectiles(room, io, zombieLogic, checkMapCollisions) {
+function updateProjectiles(room, io, zombieLogic, checkMapCollisions, playerLogic) {
   for (let i = room.projectiles.length - 1; i >= 0; i--) {
     const projectile = room.projectiles[i];
     
@@ -52,19 +52,18 @@ function updateProjectiles(room, io, zombieLogic, checkMapCollisions) {
       const distance = Math.sqrt(dx * dx + dz * dz);
       
       if (distance < PROJECTILE_COLLISION_RADIUS) {
-        // Player hit!
-        player.health -= PROJECTILE_DAMAGE;
-        
-        // Notify players about the hit
-        io.to(room.id).emit('playerHit', {
-          playerId: playerId,
-          health: player.health
-        });
-        
-        // Remove projectile
+        playerLogic.handlePlayerHit(
+          player,
+          room,
+          io,
+          PROJECTILE_DAMAGE,
+          'projectile',
+          projectile.id
+        );
+
         room.projectiles.splice(i, 1);
         io.to(room.id).emit('projectileDestroyed', projectile.id);
-        
+
         hitSomething = true;
         break;
       }

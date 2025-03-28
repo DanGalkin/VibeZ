@@ -149,10 +149,126 @@ function handlePlayerMovement(player, movement, checkMapCollisions, map, isWithi
   return player.position;
 }
 
+/**
+ * Handle damage to a player and check for death
+ * @param {Object} player - The player that was hit
+ * @param {Object} room - The game room the player is in
+ * @param {Object} io - Socket.io instance for emitting events
+ * @param {number} damage - Amount of damage to deal (default: 10)
+ * @param {string} [sourceType] - Source of damage ("zombie", "player", "projectile")
+ * @param {string} [sourceId] - ID of the entity that caused the damage
+ * @returns {boolean} - Returns true if player died
+ */
+function handlePlayerHit(player, room, io, damage = 10, sourceType = null, sourceId = null) {
+  player.health -= damage;
+  const isDead = player.health <= 0;
+
+  const hitData = {
+    playerId: player.id,
+    health: player.health,
+    sourceType,
+    sourceId,
+    isDead
+  };
+
+  io.to(room.id).emit('playerHit', hitData);
+
+  if (isDead) {
+    player.health = 0;
+    player.state = 'dead';
+    player.deathTime = Date.now();
+
+    io.to(room.id).emit('playerDeath', {
+      playerId: player.id,
+      position: player.position
+    });
+
+    schedulePlayerRespawn(player, room, io);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Schedule player respawn after death
+ * @param {Object} player - The player to respawn
+ * @param {Object} room - The game room
+ * @param {Object} io - Socket.io instance
+ * @param {number} delay - Respawn delay in ms (default: 5000)
+ */
+function schedulePlayerRespawn(player, room, io, delay = 5000) {
+  setTimeout(() => {
+    if (!room || !room.players[player.id]) return;
+
+    player.health = 100;
+    player.state = 'alive';
+    player.position = findSafeSpawnPosition(room);
+    player.ammo = 20;
+
+    io.to(player.socketId).emit('playerRespawn', {
+      health: player.health,
+      position: player.position,
+      ammo: player.ammo
+    });
+
+    io.to(room.id).emit('playerRespawned', {
+      playerId: player.id,
+      position: player.position
+    });
+  }, delay);
+}
+
+/**
+ * Find a safe position to spawn player away from zombies and other players
+ * @param {Object} room - The game room
+ * @returns {Object} - Safe spawn position {x, y, z}
+ */
+function findSafeSpawnPosition(room) {
+  const mapSize = room.map.size || 50;
+  const MIN_ZOMBIE_DISTANCE = 15;
+  const MIN_PLAYER_DISTANCE = 10;
+
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const position = {
+      x: (Math.random() * 1.8 - 0.9) * mapSize,
+      y: 0,
+      z: (Math.random() * 1.8 - 0.9) * mapSize
+    };
+
+    let tooCloseToZombie = room.zombies.some(zombie => {
+      const dx = position.x - zombie.position.x;
+      const dz = position.z - zombie.position.z;
+      return dx * dx + dz * dz < MIN_ZOMBIE_DISTANCE * MIN_ZOMBIE_DISTANCE;
+    });
+
+    if (tooCloseToZombie) continue;
+
+    let tooCloseToPlayer = Object.values(room.players).some(otherPlayer => {
+      if (otherPlayer.state === 'dead') return false;
+      const dx = position.x - otherPlayer.position.x;
+      const dz = position.z - otherPlayer.position.z;
+      return dx * dx + dz * dz < MIN_PLAYER_DISTANCE * MIN_PLAYER_DISTANCE;
+    });
+
+    if (tooCloseToPlayer) continue;
+
+    const collisionResult = room.checkMapCollisions({ position, radius: 0.5 }, room.map);
+    if (collisionResult.collision) continue;
+
+    return position;
+  }
+
+  return { x: 0, y: 0, z: 0 };
+}
+
 module.exports = {
   PLAYER_SPEED,
   getRandomColor,
   createPlayer,
   generateEdgeSpawnPosition, // Export the new function
-  handlePlayerMovement
+  handlePlayerMovement,
+  handlePlayerHit,
+  schedulePlayerRespawn,
+  findSafeSpawnPosition
 };

@@ -1618,16 +1618,14 @@ function setupSocketEvents(ui) {
   socket.on('playerHit', (data) => {
     if (data.playerId === socket.id) {
       ui.updateHealth(data.health);
-      
-      // Play zombie bite sound if local player is hit
-      playZombieBiteSound();
-      
-      // Flash screen red
-      scene.background = new THREE.Color(0xff0000);
-      setTimeout(() => {
-        scene.background = new THREE.Color(0x87ceeb);
-      }, 100);
+
+      if (data.sourceType === 'zombie') {
+        // Play zombie bite sound if local player is hit
+        playZombieBiteSound();
+      }
     }
+    // Show blood burst at the player position
+    createParticleBurst(players[data.playerId].mesh.position);
   });
   
   // New zombie created
@@ -1986,6 +1984,82 @@ function setupSocketEvents(ui) {
     serverPerformance = data;
     updatePerformanceDisplay();
   });
+
+  socket.on('playerDeath', (data) => {
+    if (data.playerId === socket.id) {
+      // Local player died
+
+      // Show death screen overlay
+      const deathScreen = document.createElement('div');
+      deathScreen.id = 'death-screen';
+      deathScreen.className = 'death-screen';
+      deathScreen.innerHTML = `
+        <div class="death-message">You died!</div>
+        <div class="respawn-timer">Respawning in 5...</div>
+      `;
+      document.body.appendChild(deathScreen);
+
+      // Update respawn countdown
+      let timeLeft = 5;
+      const countdownInterval = setInterval(() => {
+        timeLeft--;
+        const timerElement = document.querySelector('.respawn-timer');
+        if (timerElement) {
+          timerElement.textContent = `Respawning in ${timeLeft}...`;
+        }
+        if (timeLeft <= 0) {
+          clearInterval(countdownInterval);
+        }
+      }, 1000);
+
+      // Hide the player mesh
+      if (players[socket.id] && players[socket.id].mesh) {
+        players[socket.id].mesh.visible = false;
+      }
+    } else {
+      // Other player died - optional death animation
+      if (players[data.playerId] && players[data.playerId].mesh) {
+        players[data.playerId].mesh.visible = false;
+      }
+    }
+  });
+
+  socket.on('playerRespawn', (data) => {
+    // Update local player with respawn data
+    updateAmmoDisplay(data.ammo);
+    ui.updateHealth(data.health);
+
+    // Remove death screen with proper fade-out animation
+    const deathScreen = document.getElementById('death-screen');
+    if (deathScreen) {
+      deathScreen.style.animation = 'fadeIn 0.5s ease-out';
+      setTimeout(() => {
+        if (deathScreen.parentNode) {
+          deathScreen.parentNode.removeChild(deathScreen);
+        }
+      }, 500);
+    }
+  });
+
+  socket.on('playerRespawned', (data) => {
+    if (data.playerId === socket.id) {
+      // Local player respawned
+      if (players[socket.id] && players[socket.id].mesh) {
+        // Show player and update position
+        players[socket.id].mesh.visible = true;
+        players[socket.id].mesh.position.set(
+          data.position.x,
+          data.position.y || 0,
+          data.position.z
+        );
+      }
+    } else {
+      // Other player respawned - make them visible again
+      if (players[data.playerId] && players[data.playerId].mesh) {
+        players[data.playerId].mesh.visible = true;
+      }
+    }
+  });
 }
 
 // Create particle effect when picking up ammo
@@ -2238,6 +2312,7 @@ function init() {
   setupSocketEvents(ui);
   addAmmoPickupStyles();
   addFogOfWarDebugPanel();
+  addDeathScreenStyles();
   
   // Create fog of war after a brief delay to ensure all other elements are initialized
   setTimeout(() => {
@@ -2774,4 +2849,40 @@ function createParticleBurst(position, color = 0xFF0000, count = 20, duration = 
   }
   
   animateParticles();
+}
+
+function addDeathScreenStyles() {
+  const style = document.createElement('style');
+  style.textContent = `
+    .death-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(139, 0, 0, 0.5); /* Semi-transparent dark red */
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+    
+    .death-message {
+      font-size: 3em;
+      margin-bottom: 20px;
+    }
+    
+    .respawn-timer {
+      font-size: 1.5em;
+    }
+
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+  `;
+  document.head.appendChild(style);
 }
