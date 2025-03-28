@@ -304,6 +304,14 @@ function setupControls() {
   // Mouse click for shooting
   document.addEventListener('click', (event) => {
     if (!gameActive || !localPlayer) return;
+
+    const playerData = players[socket.id]?.data;
+    console.log('Player data:', playerData);
+
+    if (!playerData || playerData.state === 'dead') {
+      console.log('Player is dead. Ignoring click event.');
+      return; // Exit the function if the player is dead
+    }
     
     // IMPORTANT: Check local ammo count before sending shoot event
     if (playerAmmo <= 0 || !canFire) {
@@ -1986,6 +1994,12 @@ function setupSocketEvents(ui) {
   });
 
   socket.on('playerDeath', (data) => {
+    
+    // Update the player's state in the players object
+    if (players[data.playerId]) {
+      players[data.playerId].data.state = data.state; // Update state to 'dead'
+    }
+
     if (data.playerId === socket.id) {
       // Local player died
 
@@ -2026,13 +2040,19 @@ function setupSocketEvents(ui) {
 
   socket.on('playerRespawn', (data) => {
     // Update local player with respawn data
+    console.log('Respawning player');
+    // Update the player's state in the players object
+    if (players[socket.id]) {
+      players[socket.id].data.state = data.state; // Update state to 'alive'
+    }
+
     updateAmmoDisplay(data.ammo);
     ui.updateHealth(data.health);
 
     // Remove death screen with proper fade-out animation
     const deathScreen = document.getElementById('death-screen');
     if (deathScreen) {
-      deathScreen.style.animation = 'fadeIn 0.5s ease-out';
+      deathScreen.style.animation = 'fadeOut 0.5s ease-out';
       setTimeout(() => {
         if (deathScreen.parentNode) {
           deathScreen.parentNode.removeChild(deathScreen);
@@ -2043,6 +2063,7 @@ function setupSocketEvents(ui) {
 
   socket.on('playerRespawned', (data) => {
     if (data.playerId === socket.id) {
+      console.log('Player respawned');
       // Local player respawned
       if (players[socket.id] && players[socket.id].mesh) {
         // Show player and update position

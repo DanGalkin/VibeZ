@@ -161,6 +161,10 @@ function findClosestPlayer(zombie, players, map, checkMapCollisions) {
   
   for (const playerId in players) {
     const player = players[playerId];
+
+    // Skip dead players
+    if (player.state === 'dead') continue;
+
     const dx = player.position.x - zombie.position.x;
     const dz = player.position.z - zombie.position.z;
     const distance = Math.sqrt(dx * dx + dz * dz);

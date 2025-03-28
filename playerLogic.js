@@ -2,6 +2,7 @@
 
 // Constants for the player
 const PLAYER_SPEED = 5.0; // Units per second (server-controlled speed)
+const DEFAULT_AMMO_AMOUNT = 7; // Default ammo count for pistol
 
 /**
  * Helper function to generate a random color in hex format
@@ -82,7 +83,7 @@ function createPlayer(socketId, mapSize = 50) {
     speed: PLAYER_SPEED,
     lastUpdateTime: Date.now(),
     weapon: 'pistol', // Default weapon
-    ammo: 7 // Default ammo count for pistol
+    ammo: DEFAULT_AMMO_AMOUNT // Default ammo count for pistol
   };
 }
 
@@ -180,7 +181,8 @@ function handlePlayerHit(player, room, io, damage = 10, sourceType = null, sourc
 
     io.to(room.id).emit('playerDeath', {
       playerId: player.id,
-      position: player.position
+      position: player.position,
+      state: player.state,
     });
 
     schedulePlayerRespawn(player, room, io);
@@ -203,13 +205,14 @@ function schedulePlayerRespawn(player, room, io, delay = 5000) {
 
     player.health = 100;
     player.state = 'alive';
-    player.position = findSafeSpawnPosition(room);
-    player.ammo = 20;
+    player.position = generateEdgeSpawnPosition(room.mapSize);
+    player.ammo = DEFAULT_AMMO_AMOUNT; // Reset ammo to default value
 
-    io.to(player.socketId).emit('playerRespawn', {
+    io.to(player.id).emit('playerRespawn', {
       health: player.health,
       position: player.position,
-      ammo: player.ammo
+      ammo: player.ammo,
+      state: player.state,
     });
 
     io.to(room.id).emit('playerRespawned', {

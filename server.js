@@ -552,12 +552,19 @@ io.on('connection', (socket) => {
   // Handle shooting
   socket.on('shoot', (data) => {
     if (!socket.roomId || !rooms[socket.roomId]) return;
+
     
     const room = rooms[socket.roomId];
     const player = room.players[socket.id];
     
     if (!player) {
       console.log('Player not found for shooting event');
+      return;
+    }
+
+    // Check if the player is dead
+    if (player.state === 'dead') {
+      console.log(`Player ${socket.id} is dead and cannot shoot.`);
       return;
     }
     
