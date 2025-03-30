@@ -256,6 +256,9 @@ function setupControls() {
       case 'KeyF': // Press F to toggle fog of war visualization
         if (gameActive) toggleFogOfWar();
         break;
+      case 'KeyP': // Press P to toggle performance monitors
+        if (gameActive) togglePerformanceMonitors();
+        break;
     }
     
     // Remove reload key handler
@@ -994,6 +997,43 @@ function updateClientPerformanceDisplay() {
   }
 }
 
+// Update the performance monitor display
+function updatePerformanceDisplay() {
+  const perfMonitor = document.getElementById('performance-monitor');
+  if (!perfMonitor) return;
+  
+  const maxTime = parseFloat(serverPerformance.maxLoopTime);
+  perfMonitor.textContent = `Server: ${maxTime.toFixed(2)}ms`;
+  
+  // Visual feedback based on performance
+  perfMonitor.classList.remove('warning', 'critical');
+  if (maxTime > 16.67) { // More than one frame at 60fps
+    perfMonitor.classList.add('warning');
+  }
+  if (maxTime > 33.33) { // More than two frames at 60fps
+    perfMonitor.classList.add('critical');
+  }
+}
+
+// Toggle visibility of performance monitors
+function togglePerformanceMonitors() {
+  const clientPerfMonitor = document.getElementById('client-performance-monitor');
+  const serverPerfMonitor = document.getElementById('performance-monitor');
+  const fogOfWarInfo = document.getElementById('fog-of-war-info');
+  
+  if (clientPerfMonitor) {
+    clientPerfMonitor.style.display = clientPerfMonitor.style.display === 'none' ? 'block' : 'none';
+  }
+  
+  if (serverPerfMonitor) {
+    serverPerfMonitor.style.display = serverPerfMonitor.style.display === 'none' ? 'block' : 'none';
+  }
+  
+  if (fogOfWarInfo) {
+    fogOfWarInfo.style.display = fogOfWarInfo.style.display === 'none' ? 'block' : 'none';
+  }
+}
+
 // Set up UI and game joining
 function setupUI() {
   const joinGameDiv = document.getElementById('join-game');
@@ -1204,9 +1244,6 @@ function setupUI() {
   const gameUI = document.createElement('div');
   gameUI.id = 'game-ui';
   gameUI.innerHTML = `
-    <div id="health-container">
-      <div id="health">Health: 100</div>
-    </div>
     <div id="weapon-container">
       <div id="weapon-icon">🔫</div>
       <div id="ammo-display">7</div>
@@ -1362,7 +1399,8 @@ function setupUI() {
   // Update health display
   function updateHealth(health) {
     playerHealth = health;
-    healthDisplay.innerText = `Health: ${health}`;
+    // hide for now, while we don't have a health UI
+    // healthDisplay.innerText = `Health: ${health}`;
   }
   
   // Fetch available rooms from server
@@ -2166,185 +2204,173 @@ function addAmmoPickupStyles() {
   document.head.appendChild(style);
 }
 
-// Update the performance monitor display
-function updatePerformanceDisplay() {
-  const perfMonitor = document.getElementById('performance-monitor');
-  if (!perfMonitor) return;
-  
-  const maxTime = parseFloat(serverPerformance.maxLoopTime);
-  perfMonitor.textContent = `Server: ${maxTime.toFixed(2)}ms`;
-  
-  // Visual feedback based on performance
-  perfMonitor.classList.remove('warning', 'critical');
-  if (maxTime > 16.67) { // More than one frame at 60fps
-    perfMonitor.classList.add('warning');
-  }
-  if (maxTime > 33.33) { // More than two frames at 60fps
-    perfMonitor.classList.add('critical');
-  }
-}
-
-// Create a crosshair mesh to show player's aiming direction
-function createCrosshairMesh() {
-  const crosshairGroup = new THREE.Group();
-  
-  // Create a material for the crosshair
-  const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-  
-  // Create horizontal line
-  const horizontalGeometry = new THREE.BoxGeometry(0.4, 0.05, 0.05);
-  const horizontalLine = new THREE.Mesh(horizontalGeometry, material);
-  crosshairGroup.add(horizontalLine);
-  
-  // Create vertical line
-  const verticalGeometry = new THREE.BoxGeometry(0.05, 0.4, 0.05);
-  const verticalLine = new THREE.Mesh(verticalGeometry, material);
-  crosshairGroup.add(verticalLine);
-  
-  // Create center dot
-  const centerGeometry = new THREE.SphereGeometry(0.05, 8, 8);
-  const centerDot = new THREE.Mesh(centerGeometry, material);
-  crosshairGroup.add(centerDot);
-  
-  // Set position to default
-  crosshairGroup.position.set(0, 0.5, 0);
-  
-  // Add to scene
-  scene.add(crosshairGroup);
-  return crosshairGroup;
-}
-
-// Update crosshair position based on player sight direction
-function updateCrosshairPosition() {
-  if (!localPlayer || !crosshair) return;
-  
-  // Get player's forward direction based on rotation
-  const direction = new THREE.Vector3(0, 0, 1);
-  direction.applyAxisAngle(new THREE.Vector3(0, 1, 0), localPlayer.rotation.y);
-  
-  // Set crosshair position 6 units in front of player
-  crosshair.position.x = localPlayer.position.x + direction.x * CROSSHAIR_DISTANCE;
-  crosshair.position.z = localPlayer.position.z + direction.z * CROSSHAIR_DISTANCE;
-  crosshair.position.y = 0.5; // Slightly above ground
-  
-  // Make crosshair always face camera
-  crosshair.lookAt(camera.position);
-}
-
-// Initialize audio system
-function initAudio() {
-  try {
-    // Create audio context
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    
-    // Create audio listener and attach to camera
-    audioListener = new THREE.AudioListener();
-    camera.add(audioListener);
-    
-    // Load gunshot sound
-    const audioLoader = new THREE.AudioLoader();
-    audioLoader.load('sounds/gunshot.mp3', function(buffer) {
-      gunshotBuffer = buffer;
-      console.log('Gunshot sound loaded successfully');
-    });
-    
-    // Load ammo pickup sound
-    audioLoader.load('sounds/item-pickup.mp3', function(buffer) {
-      ammoPickupBuffer = buffer;
-      console.log('Ammo pickup sound loaded successfully');
-    });
-    
-    // Load zombie bite sound
-    audioLoader.load('sounds/zombie-bite.mp3', function(buffer) {
-      zombieBiteBuffer = buffer;
-      console.log('Zombie bite sound loaded successfully');
-    });
-    
-    audioInitialized = true;
-  } catch(e) {
-    console.error('Audio initialization failed:', e);
-  }
-}
-
-// Play gunshot sound at a specific position
-function playGunshotSound(position) {
-  if (!audioInitialized || !audioListener || !gunshotBuffer) return;
-  
-  // Create a positional audio source
-  const sound = new THREE.PositionalAudio(audioListener);
-  sound.setBuffer(gunshotBuffer);
-  sound.setRefDistance(5); // Distance at which the volume is full
-  sound.setMaxDistance(25); // Distance at which the volume is zero
-  sound.setVolume(0.5);
-  sound.setRolloffFactor(1.5); // How quickly the sound fades with distance
-  
-  // Create a temporary object to hold the sound at the proper position
-  const soundObj = new THREE.Object3D();
-  soundObj.position.copy(position);
-  soundObj.add(sound);
-  scene.add(soundObj);
-  
-  // Play the sound
-  sound.play();
-  
-  // Remove the sound object after it finishes playing
-  sound.onEnded = () => {
-    scene.remove(soundObj);
-  };
-}
-
-// Play ammo pickup sound (non-positional, only for local player)
-function playAmmoPickupSound() {
-  if (!audioInitialized || !audioListener || !ammoPickupBuffer) return;
-  
-  // Create a non-positional audio source (attached to listener)
-  const sound = new THREE.Audio(audioListener);
-  sound.setBuffer(ammoPickupBuffer);
-  sound.setVolume(0.7);
-  
-  // Play the sound
-  sound.play();
-}
-
-// Play zombie bite sound (non-positional, only for local player)
-function playZombieBiteSound() {
-  if (!audioInitialized || !audioListener || !zombieBiteBuffer) return;
-  
-  // Create a non-positional audio source (attached to listener)
-  const sound = new THREE.Audio(audioListener);
-  sound.setBuffer(zombieBiteBuffer);
-  sound.setVolume(0.8);
-  
-  // Play the sound
-  sound.play();
-}
-
-// Initialize game
-function init() {
-  initThree();
-  initAudio(); // Initialize audio system
-  const ui = setupUI();
-  setupSocketEvents(ui);
-  addAmmoPickupStyles();
-  addFogOfWarDebugPanel();
-  addDeathScreenStyles();
-  
-  // Create fog of war after a brief delay to ensure all other elements are initialized
-  setTimeout(() => {
-    if (!fogOfWarMesh) {
-      createFogOfWarVisualization();
+// Add a debug info panel for fog of war
+function addFogOfWarDebugPanel() {
+  const style = document.createElement('style');
+  style.textContent = `
+    #fog-of-war-info {
+      position: absolute;
+      top: 60px;
+      left: 20px;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      font-size: 12px;
+      pointer-events: none;
+      z-index: 1000;
+      font-family: monospace;
+      display: none;
     }
-  }, 100);
+    
+    #performance-monitor, #client-performance-monitor {
+      display: none;
+    }
+  `;
+  document.head.appendChild(style);
   
-  // Add initial setup for performance monitors
-  updatePerformanceDisplay();
-  updateClientPerformanceDisplay();
+  const infoPanel = document.createElement('div');
+  infoPanel.id = 'fog-of-war-info';
+  infoPanel.innerHTML = `Fog of War: Active<br>
+    Visible Players: 0<br>
+    Visible Zombies: 0<br>
+    Visible Pickups: 0<br>
+    <span style="opacity: 0.7">Press F to toggle visualization</span>`;
+  document.body.appendChild(infoPanel);
   
-  animate(0); // Start with time 0
+  // Update the panel regularly with visibility stats
+  setInterval(() => {
+    const visiblePlayers = Object.keys(players).length - 1; // Minus self
+    const visibleZombies = Object.keys(zombies).length;
+    const visiblePickups = Object.keys(ammoPickups).length;
+    
+    const visibilityStatus = fogOfWarMesh && fogOfWarMesh.visible ? 'Active' : 'Disabled';
+    
+    infoPanel.innerHTML = `Fog of War: ${visibilityStatus}<br>
+      Visible Players: ${visiblePlayers}<br>
+      Visible Zombies: ${visibleZombies}<br>
+      Visible Pickups: ${visiblePickups}<br>
+      <span style="opacity: 0.7">Press F to toggle visualization</span>`;
+  }, 500);
 }
 
-// Start the game when page loads
-window.addEventListener('load', init);
+// Add user interaction to initialize audio
+document.addEventListener('click', () => {
+  // Many browsers require user interaction to start audio context
+  if (audioContext && audioContext.state === 'suspended') {
+    audioContext.resume();
+  }
+}, { once: true });
+
+function createParticleBurst(position, color = 0xFF0000, count = 20, duration = 1000) {
+  const particleGroup = new THREE.Group();
+  
+  // Create particles
+  for (let i = 0; i < count; i++) {
+    const geometry = new THREE.SphereGeometry(0.1, 4, 4);
+    const material = new THREE.MeshBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 1
+    });
+    
+    const particle = new THREE.Mesh(geometry, material);
+    
+    // Set initial position
+    particle.position.copy(position);
+    
+    // Random velocity in all directions
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.05 + Math.random() * 0.1;
+    const elevation = Math.random() * Math.PI - Math.PI/2;
+    
+    particle.userData = {
+      velocity: new THREE.Vector3(
+        Math.cos(angle) * Math.cos(elevation) * speed,
+        Math.sin(elevation) * speed,
+        Math.sin(angle) * Math.cos(elevation) * speed
+      ),
+      startTime: performance.now(),
+      duration: duration
+    };
+    
+    particleGroup.add(particle);
+  }
+  
+  scene.add(particleGroup);
+  
+  // Animate particles
+  function animateParticles() {
+    const now = performance.now();
+    let hasActiveParticles = false;
+    
+    particleGroup.children.forEach(particle => {
+      const elapsed = now - particle.userData.startTime;
+      const progress = elapsed / particle.userData.duration;
+      
+      if (progress < 1) {
+        // Update position
+        particle.position.add(particle.userData.velocity);
+        
+        // Add gravity effect
+        particle.userData.velocity.y -= 0.005;
+        
+        // Fade out
+        particle.material.opacity = 1 - progress;
+        
+        hasActiveParticles = true;
+      }
+    });
+    
+    if (hasActiveParticles) {
+      requestAnimationFrame(animateParticles);
+    } else {
+      scene.remove(particleGroup);
+      particleGroup.children.forEach(particle => {
+        particle.geometry.dispose();
+        particle.material.dispose();
+      });
+    }
+  }
+  
+  animateParticles();
+}
+
+function addDeathScreenStyles() {
+  const style = document.createElement('style');
+  style.textContent = `
+    .death-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(139, 0, 0, 0.5); /* Semi-transparent dark red */
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+    
+    .death-message {
+      font-size: 3em;
+      margin-bottom: 20px;
+    }
+    
+    .respawn-timer {
+      font-size: 1.5em;
+    }
+
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+  `;
+  document.head.appendChild(style);
+}
 
 // Add these functions for entity visibility management
 function fadeInEntity(mesh) {
@@ -2471,51 +2497,6 @@ function enableTransparency(material, opacity) {
   
   material.transparent = true;
   material.opacity = opacity;
-}
-
-// Add a debug info panel for fog of war
-function addFogOfWarDebugPanel() {
-  const style = document.createElement('style');
-  style.textContent = `
-    #fog-of-war-info {
-      position: absolute;
-      top: 60px;
-      left: 20px;
-      background: rgba(0,0,0,0.5);
-      color: white;
-      padding: 10px;
-      border-radius: 5px;
-      font-size: 12px;
-      pointer-events: none;
-      z-index: 1000;
-      font-family: monospace;
-    }
-  `;
-  document.head.appendChild(style);
-  
-  const infoPanel = document.createElement('div');
-  infoPanel.id = 'fog-of-war-info';
-  infoPanel.innerHTML = `Fog of War: Active<br>
-    Visible Players: 0<br>
-    Visible Zombies: 0<br>
-    Visible Pickups: 0<br>
-    <span style="opacity: 0.7">Press F to toggle visualization</span>`;
-  document.body.appendChild(infoPanel);
-  
-  // Update the panel regularly with visibility stats
-  setInterval(() => {
-    const visiblePlayers = Object.keys(players).length - 1; // Minus self
-    const visibleZombies = Object.keys(zombies).length;
-    const visiblePickups = Object.keys(ammoPickups).length;
-    
-    const visibilityStatus = fogOfWarMesh && fogOfWarMesh.visible ? 'Active' : 'Disabled';
-    
-    infoPanel.innerHTML = `Fog of War: ${visibilityStatus}<br>
-      Visible Players: ${visiblePlayers}<br>
-      Visible Zombies: ${visibleZombies}<br>
-      Visible Pickups: ${visiblePickups}<br>
-      <span style="opacity: 0.7">Press F to toggle visualization</span>`;
-  }, 500);
 }
 
 // Create fog of war visualization
@@ -2785,120 +2766,164 @@ function showGameMessage(text, color = '#ffffff') {
   }, 5500);
 }
 
-// Add user interaction to initialize audio
-document.addEventListener('click', () => {
-  // Many browsers require user interaction to start audio context
-  if (audioContext && audioContext.state === 'suspended') {
-    audioContext.resume();
-  }
-}, { once: true });
-
-function createParticleBurst(position, color = 0xFF0000, count = 20, duration = 1000) {
-  const particleGroup = new THREE.Group();
-  
-  // Create particles
-  for (let i = 0; i < count; i++) {
-    const geometry = new THREE.SphereGeometry(0.1, 4, 4);
-    const material = new THREE.MeshBasicMaterial({
-      color: color,
-      transparent: true,
-      opacity: 1
+// Initialize audio system
+function initAudio() {
+  try {
+    // Create audio context
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    
+    // Create audio listener and attach to camera
+    audioListener = new THREE.AudioListener();
+    camera.add(audioListener);
+    
+    // Load gunshot sound
+    const audioLoader = new THREE.AudioLoader();
+    audioLoader.load('sounds/gunshot.mp3', function(buffer) {
+      gunshotBuffer = buffer;
+      console.log('Gunshot sound loaded successfully');
     });
     
-    const particle = new THREE.Mesh(geometry, material);
-    
-    // Set initial position
-    particle.position.copy(position);
-    
-    // Random velocity in all directions
-    const angle = Math.random() * Math.PI * 2;
-    const speed = 0.05 + Math.random() * 0.1;
-    const elevation = Math.random() * Math.PI - Math.PI/2;
-    
-    particle.userData = {
-      velocity: new THREE.Vector3(
-        Math.cos(angle) * Math.cos(elevation) * speed,
-        Math.sin(elevation) * speed,
-        Math.sin(angle) * Math.cos(elevation) * speed
-      ),
-      startTime: performance.now(),
-      duration: duration
-    };
-    
-    particleGroup.add(particle);
-  }
-  
-  scene.add(particleGroup);
-  
-  // Animate particles
-  function animateParticles() {
-    const now = performance.now();
-    let hasActiveParticles = false;
-    
-    particleGroup.children.forEach(particle => {
-      const elapsed = now - particle.userData.startTime;
-      const progress = elapsed / particle.userData.duration;
-      
-      if (progress < 1) {
-        // Update position
-        particle.position.add(particle.userData.velocity);
-        
-        // Add gravity effect
-        particle.userData.velocity.y -= 0.005;
-        
-        // Fade out
-        particle.material.opacity = 1 - progress;
-        
-        hasActiveParticles = true;
-      }
+    // Load ammo pickup sound
+    audioLoader.load('sounds/item-pickup.mp3', function(buffer) {
+      ammoPickupBuffer = buffer;
+      console.log('Ammo pickup sound loaded successfully');
     });
     
-    if (hasActiveParticles) {
-      requestAnimationFrame(animateParticles);
-    } else {
-      scene.remove(particleGroup);
-      particleGroup.children.forEach(particle => {
-        particle.geometry.dispose();
-        particle.material.dispose();
-      });
-    }
+    // Load zombie bite sound
+    audioLoader.load('sounds/zombie-bite.mp3', function(buffer) {
+      zombieBiteBuffer = buffer;
+      console.log('Zombie bite sound loaded successfully');
+    });
+    
+    audioInitialized = true;
+  } catch(e) {
+    console.error('Audio initialization failed:', e);
   }
+}
+
+// Play gunshot sound at a specific position
+function playGunshotSound(position) {
+  if (!audioInitialized || !audioListener || !gunshotBuffer) return;
   
-  animateParticles();
+  // Create a positional audio source
+  const sound = new THREE.PositionalAudio(audioListener);
+  sound.setBuffer(gunshotBuffer);
+  sound.setRefDistance(5); // Distance at which the volume is full
+  sound.setMaxDistance(25); // Distance at which the volume is zero
+  sound.setVolume(0.5);
+  sound.setRolloffFactor(1.5); // How quickly the sound fades with distance
+  
+  // Create a temporary object to hold the sound at the proper position
+  const soundObj = new THREE.Object3D();
+  soundObj.position.copy(position);
+  soundObj.add(sound);
+  scene.add(soundObj);
+  
+  // Play the sound
+  sound.play();
+  
+  // Remove the sound object after it finishes playing
+  sound.onEnded = () => {
+    scene.remove(soundObj);
+  };
 }
 
-function addDeathScreenStyles() {
-  const style = document.createElement('style');
-  style.textContent = `
-    .death-screen {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background-color: rgba(139, 0, 0, 0.5); /* Semi-transparent dark red */
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      color: white;
-      font-family: Arial, sans-serif;
-    }
-    
-    .death-message {
-      font-size: 3em;
-      margin-bottom: 20px;
-    }
-    
-    .respawn-timer {
-      font-size: 1.5em;
-    }
-
-    @keyframes fadeOut {
-      from { opacity: 1; }
-      to { opacity: 0; }
-    }
-  `;
-  document.head.appendChild(style);
+// Play ammo pickup sound (non-positional, only for local player)
+function playAmmoPickupSound() {
+  if (!audioInitialized || !audioListener || !ammoPickupBuffer) return;
+  
+  // Create a non-positional audio source (attached to listener)
+  const sound = new THREE.Audio(audioListener);
+  sound.setBuffer(ammoPickupBuffer);
+  sound.setVolume(0.7);
+  
+  // Play the sound
+  sound.play();
 }
+
+// Play zombie bite sound (non-positional, only for local player)
+function playZombieBiteSound() {
+  if (!audioInitialized || !audioListener || !zombieBiteBuffer) return;
+  
+  // Create a non-positional audio source (attached to listener)
+  const sound = new THREE.Audio(audioListener);
+  sound.setBuffer(zombieBiteBuffer);
+  sound.setVolume(0.8);
+  
+  // Play the sound
+  sound.play();
+}
+
+// Create a crosshair mesh to show player's aiming direction
+function createCrosshairMesh() {
+  const crosshairGroup = new THREE.Group();
+  
+  // Create a material for the crosshair
+  const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+  
+  // Create horizontal line
+  const horizontalGeometry = new THREE.BoxGeometry(0.4, 0.05, 0.05);
+  const horizontalLine = new THREE.Mesh(horizontalGeometry, material);
+  crosshairGroup.add(horizontalLine);
+  
+  // Create vertical line
+  const verticalGeometry = new THREE.BoxGeometry(0.05, 0.4, 0.05);
+  const verticalLine = new THREE.Mesh(verticalGeometry, material);
+  crosshairGroup.add(verticalLine);
+  
+  // Create center dot
+  const centerGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+  const centerDot = new THREE.Mesh(centerGeometry, material);
+  crosshairGroup.add(centerDot);
+  
+  // Set position to default
+  crosshairGroup.position.set(0, 0.5, 0);
+  
+  // Add to scene
+  scene.add(crosshairGroup);
+  return crosshairGroup;
+}
+
+// Update crosshair position based on player sight direction
+function updateCrosshairPosition() {
+  if (!localPlayer || !crosshair) return;
+  
+  // Get player's forward direction based on rotation
+  const direction = new THREE.Vector3(0, 0, 1);
+  direction.applyAxisAngle(new THREE.Vector3(0, 1, 0), localPlayer.rotation.y);
+  
+  // Set crosshair position 6 units in front of player
+  crosshair.position.x = localPlayer.position.x + direction.x * CROSSHAIR_DISTANCE;
+  crosshair.position.z = localPlayer.position.z + direction.z * CROSSHAIR_DISTANCE;
+  crosshair.position.y = 0.5; // Slightly above ground
+  
+  // Make crosshair always face camera
+  crosshair.lookAt(camera.position);
+}
+
+// Initialize game
+function init() {
+  initThree();
+  initAudio(); // Initialize audio system
+  const ui = setupUI();
+  setupSocketEvents(ui);
+  addAmmoPickupStyles();
+  addFogOfWarDebugPanel();
+  addDeathScreenStyles();
+  
+  // Create fog of war after a brief delay to ensure all other elements are initialized
+  setTimeout(() => {
+    if (!fogOfWarMesh) {
+      createFogOfWarVisualization();
+    }
+  }, 100);
+  
+  // Add initial setup for performance monitors
+  updatePerformanceDisplay();
+  updateClientPerformanceDisplay();
+  
+  animate(0); // Start with time 0
+}
+
+// Start the game when page loads
+window.addEventListener('load', init);
