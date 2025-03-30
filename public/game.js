@@ -1526,17 +1526,12 @@ function setupSocketEvents(ui) {
   // Player left
   socket.on('playerLeft', (data) => {
     const playerId = typeof data === 'string' ? data : data.id;
-    const playerName = typeof data === 'string' ? players[data]?.data?.name : data.name;
-    
-    console.log('Player left:', playerId);
+    const playerName = data.name || 'Another coward';
+    showGameMessage(`${playerName} has left the game`, '#ff6347');
+
     if (players[playerId]) {
       scene.remove(players[playerId].mesh);
       delete players[playerId];
-      
-      // Show player left message if we have their name
-      if (playerName) {
-        showGameMessage(`${playerName} has left the game`, '#ff6347');
-      }
     }
   });
   
@@ -2726,6 +2721,7 @@ function worldToScreen(position) {
 
 // Show game messages (chat, notifications, etc.)
 function showGameMessage(text, color = '#ffffff') {
+  console.log('showing message:', text);
   const messagesContainer = document.getElementById('game-messages');
   
   // Create container if it doesn't exist
