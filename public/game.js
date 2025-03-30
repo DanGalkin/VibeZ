@@ -122,8 +122,7 @@ function initThree() {
   );
   
   // Position camera for isometric view
-  // Use classic isometric angle (approx 45° horizontally, 35° vertically)
-  camera.position.set(20, 15, 20);
+  camera.position.set(5, 50, 5);
   camera.lookAt(0, 0, 0);
   
   // Create renderer
@@ -936,9 +935,9 @@ function animate(time) {
   // Update camera to follow local player
   if (localPlayer && gameActive) {
     // Position camera at isometric angle relative to player
-    camera.position.x = localPlayer.position.x + 20;
-    camera.position.y = localPlayer.position.y + 15;
-    camera.position.z = localPlayer.position.z + 20;
+    camera.position.x = localPlayer.position.x + 10;
+    camera.position.y = localPlayer.position.y + 24;
+    camera.position.z = localPlayer.position.z + 10;
     camera.lookAt(localPlayer.position);
     
     // Only update player sight if mouse has moved
