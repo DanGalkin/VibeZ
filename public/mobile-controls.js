@@ -2,8 +2,10 @@
  * Mobile controls implementation using nippleJS
  */
 
-let joystick = null;
-let joystickContainer = null;
+let leftJoystick = null;
+let rightJoystick = null;
+let leftJoystickContainer = null;
+let rightJoystickContainer = null;
 
 // Function to detect if the device is mobile
 function isMobileDevice() {
@@ -14,14 +16,14 @@ function isMobileDevice() {
 }
 
 // Initialize mobile controls if needed
-export function initMobileControls(keys) {
+export function initMobileControls(keys, updateSightCallback) {
   // Only initialize on mobile devices
   if (!isMobileDevice()) return;
   
   // Load nippleJS dynamically
   loadNippleJS().then(() => {
-    createJoystickContainer();
-    setupJoystick(keys);
+    createJoystickContainers();
+    setupJoysticks(keys, updateSightCallback);
   }).catch(err => {
     console.error('Failed to load nippleJS:', err);
   });
@@ -29,12 +31,13 @@ export function initMobileControls(keys) {
   // Handle orientation changes and resizing
   window.addEventListener('resize', () => {
     if (isMobileDevice()) {
-      if (!joystickContainer) {
-        createJoystickContainer();
-        setupJoystick(keys);
+      if (!leftJoystickContainer || !rightJoystickContainer) {
+        destroyJoysticks();
+        createJoystickContainers();
+        setupJoysticks(keys, updateSightCallback);
       }
     } else {
-      destroyJoystick();
+      destroyJoysticks();
     }
   });
 }
@@ -55,42 +58,62 @@ function loadNippleJS() {
   });
 }
 
-// Create the joystick container
-function createJoystickContainer() {
-  if (joystickContainer) return;
-  
-  // Create the container element
-  joystickContainer = document.createElement('div');
-  joystickContainer.id = 'joystick-container';
-  
-  // Style the container
-  joystickContainer.style.cssText = `
-    position: fixed;
-    bottom: 100px;
-    left: 100px;
-    width: 120px;
-    height: 120px;
-    pointer-events: auto;
-    z-index: 2000;
-    opacity: 0.7;
-    user-select: none;
-    touch-action: none;
-  `;
-  
-  document.body.appendChild(joystickContainer);
-}
-
-// Set up joystick with nippleJS
-function setupJoystick(keys) {
-  if (!window.nipplejs || !joystickContainer) return;
-  
-  if (joystick) {
-    joystick.destroy();
+// Create the joystick containers
+function createJoystickContainers() {
+  // Create left joystick container (movement)
+  if (!leftJoystickContainer) {
+    leftJoystickContainer = document.createElement('div');
+    leftJoystickContainer.id = 'left-joystick-container';
+    
+    leftJoystickContainer.style.cssText = `
+      position: fixed;
+      bottom: 100px;
+      left: 100px;
+      width: 120px;
+      height: 120px;
+      pointer-events: auto;
+      z-index: 2000;
+      opacity: 0.7;
+      user-select: none;
+      touch-action: none;
+    `;
+    
+    document.body.appendChild(leftJoystickContainer);
   }
   
-  // Create nippleJS joystick
-  joystick = nipplejs.create({
-    zone: joystickContainer,
+  // Create right joystick container (aiming)
+  if (!rightJoystickContainer) {
+    rightJoystickContainer = document.createElement('div');
+    rightJoystickContainer.id = 'right-joystick-container';
+    
+    rightJoystickContainer.style.cssText = `
+      position: fixed;
+      bottom: 100px;
+      right: 100px;
+      width: 120px;
+      height: 120px;
+      pointer-events: auto;
+      z-index: 2000;
+      opacity: 0.7;
+      user-select: none;
+      touch-action: none;
+    `;
+    
+    document.body.appendChild(rightJoystickContainer);
+  }
+}
+
+// Set up joysticks with nippleJS
+function setupJoysticks(keys, updateSightCallback) {
+  if (!window.nipplejs || !leftJoystickContainer || !rightJoystickContainer) return;
+  
+  // Clear existing joysticks
+  if (leftJoystick) leftJoystick.destroy();
+  if (rightJoystick) rightJoystick.destroy();
+  
+  // Create left joystick (movement)
+  leftJoystick = nipplejs.create({
+    zone: leftJoystickContainer,
     mode: 'static',
     position: { left: '50%', top: '50%' },
     color: 'white',
@@ -100,8 +123,20 @@ function setupJoystick(keys) {
     dynamicPage: true
   });
   
-  // Handle joystick movement
-  joystick.on('move', (evt, data) => {
+  // Create right joystick (aiming)
+  rightJoystick = nipplejs.create({
+    zone: rightJoystickContainer,
+    mode: 'static',
+    position: { left: '50%', top: '50%' },
+    color: 'white',
+    size: 100,
+    lockX: false,
+    lockY: false,
+    dynamicPage: true
+  });
+  
+  // Handle left joystick movement (player movement)
+  leftJoystick.on('move', (evt, data) => {
     const angle = data.angle.radian;
     const force = Math.min(data.force, 1.0);
     
@@ -133,28 +168,58 @@ function setupJoystick(keys) {
     }
   });
   
-  // Handle joystick release
-  joystick.on('end', () => {
+  // Handle left joystick release
+  leftJoystick.on('end', () => {
     keys.forward = false;
     keys.backward = false;
     keys.left = false;
     keys.right = false;
   });
   
+  // Handle right joystick movement (aiming)
+  rightJoystick.on('move', (evt, data) => {
+    if (typeof updateSightCallback === 'function') {
+      const angle = data.angle.radian;
+      const gameAngle = Math.PI * 3 / 4 + angle; // Convert angle to match game coordinate system
+      updateSightCallback(gameAngle);
+    }
+  });
+
+  // Add an 'end' event handler for the right joystick
+  rightJoystick.on('end', () => {
+    // Set a flag to indicate the joystick is not being used
+    window.joystickAimActive = false;
+
+    // Optional: Maintain the last joystick angle
+    if (typeof updateSightCallback === 'function') {
+      updateSightCallback(null, true); // Second parameter indicates "maintain current angle"
+    }
+  });
+  
   // Show mobile controls instructions
-  // showMobileInstructions(); // dont show them yet, annoying
+  showMobileInstructions();
 }
 
-// Clean up joystick
-function destroyJoystick() {
-  if (joystick) {
-    joystick.destroy();
-    joystick = null;
+// Clean up joysticks
+function destroyJoysticks() {
+  if (leftJoystick) {
+    leftJoystick.destroy();
+    leftJoystick = null;
   }
   
-  if (joystickContainer && joystickContainer.parentNode) {
-    joystickContainer.parentNode.removeChild(joystickContainer);
-    joystickContainer = null;
+  if (rightJoystick) {
+    rightJoystick.destroy();
+    rightJoystick = null;
+  }
+  
+  if (leftJoystickContainer && leftJoystickContainer.parentNode) {
+    leftJoystickContainer.parentNode.removeChild(leftJoystickContainer);
+    leftJoystickContainer = null;
+  }
+  
+  if (rightJoystickContainer && rightJoystickContainer.parentNode) {
+    rightJoystickContainer.parentNode.removeChild(rightJoystickContainer);
+    rightJoystickContainer = null;
   }
 }
 
@@ -167,8 +232,9 @@ function showMobileInstructions() {
   instructions.className = 'mobile-instructions';
   instructions.innerHTML = `
     <h3>Mobile Controls</h3>
-    <p>Use the joystick on the left to move</p>
-    <p>Tap anywhere to shoot</p>
+    <p>Use the LEFT joystick to move</p>
+    <p>Use the RIGHT joystick to aim</p>
+    <p>Tap anywhere else to shoot</p>
   `;
   
   // Style the instructions
@@ -233,6 +299,22 @@ function addMobileStyles() {
       .mobile-instructions {
         opacity: 1;
         transition: opacity 0.5s ease-out;
+      }
+      
+      /* Style for joysticks */
+      #left-joystick-container .nipple .front,
+      #right-joystick-container .nipple .front {
+        background-color: rgba(255, 255, 255, 0.8) !important;
+      }
+      
+      #left-joystick-container .nipple .back {
+        background-color: rgba(0, 100, 255, 0.3) !important;
+        border: 1px solid rgba(0, 100, 255, 0.5) !important;
+      }
+      
+      #right-joystick-container .nipple .back {
+        background-color: rgba(255, 50, 50, 0.3) !important;
+        border: 1px solid rgba(255, 50, 50, 0.5) !important;
       }
     }
   `;

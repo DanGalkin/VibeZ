@@ -237,9 +237,32 @@ function createMapBoundaries() {
 
 // Set up keyboard and mouse controls
 function setupControls() {
-  // Initialize mobile controls if on a mobile device
-  initMobileControls(keys);
-  
+  // Initialize mobile controls with a callback for sight direction
+  initMobileControls(keys, (angle, maintainCurrent) => {
+    if (localPlayer && gameActive) {
+      if (angle === null && maintainCurrent) {
+        // Joystick was released, maintain the current angle
+        window.joystickAimActive = false;
+        return;
+      }
+
+      // Set the flag to indicate active joystick control
+      window.joystickAimActive = true;
+
+      // Apply the angle directly to the player's rotation
+      localPlayer.rotation.y = angle;
+
+      // Send sight direction to server
+      socket.emit('playerSight', { angle });
+
+      // Update crosshair position
+      updateCrosshairPosition();
+
+      // Set flag that sight has been updated
+      mouseHasMoved = false;
+    }
+  });
+
   // Keyboard movement - using KeyboardEvent.code for layout independence
   document.addEventListener('keydown', (event) => {
     switch (event.code) {
@@ -357,16 +380,26 @@ function setupControls() {
   
   // Add touch event handling for mobile shooting
   document.addEventListener('touchend', (event) => {
-    // Don't trigger if touching the joystick area (left side)
-    if (event.changedTouches[0].clientX < window.innerWidth * 0.4) return;
-    
-    // Simulate a mouse click at the touch position
+    // Get the touch position
     const touchX = event.changedTouches[0].clientX;
     const touchY = event.changedTouches[0].clientY;
     
+    // Get the window dimensions
+    const windowWidth = window.innerWidth;
+    const windowHeight = window.innerHeight;
+    
+    // Don't trigger shooting if touching in joystick areas (left/right edges of screen)
+    const joystickSize = 150; // Slightly larger than the actual joystick to ensure we catch the entire interaction area
+    const isLeftJoystickArea = touchX < joystickSize && touchY > windowHeight - joystickSize * 1.5;
+    const isRightJoystickArea = touchX > windowWidth - joystickSize && touchY > windowHeight - joystickSize * 1.5;
+    
+    if (isLeftJoystickArea || isRightJoystickArea) {
+      return; // Don't shoot when touching joysticks
+    }
+    
     // Update mouse position for aiming
-    mousePosition.x = (touchX / window.innerWidth) * 2 - 1;
-    mousePosition.y = -(touchY / window.innerHeight) * 2 + 1;
+    mousePosition.x = (touchX / windowWidth) * 2 - 1;
+    mousePosition.y = -(touchY / windowHeight) * 2 + 1;
     
     // Calculate intersection with ground
     updateGroundMousePosition();
@@ -468,6 +501,11 @@ function updateGroundMousePosition() {
 
 // Update player sight direction based on mouse position
 function updatePlayerSight() {
+  // Prevent mouse control if joystick is active
+  if (window.joystickAimActive === true) {
+    return; // Joystick is actively controlling aim, don't override with mouse
+  }
+
   if (!localPlayer || !groundMousePosition) return;
   
   // If the mouse hasn't moved, don't change the sight direction
