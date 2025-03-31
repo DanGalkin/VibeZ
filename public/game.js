@@ -2,6 +2,8 @@
 import { createMapElements } from './map.js';
 // Import zombie-related functions
 import { createZombieMesh, animateZombies, removeZombie, handleZombieHit } from './zombies.js';
+// Import mobile controls
+import { initMobileControls, enableMobileStyles } from './mobile-controls.js';
 
 // Connect to Socket.IO server
 const socket = io();
@@ -235,6 +237,9 @@ function createMapBoundaries() {
 
 // Set up keyboard and mouse controls
 function setupControls() {
+  // Initialize mobile controls if on a mobile device
+  initMobileControls(keys);
+  
   // Keyboard movement - using KeyboardEvent.code for layout independence
   document.addEventListener('keydown', (event) => {
     switch (event.code) {
@@ -348,6 +353,65 @@ function setupControls() {
     
     // Decrement local ammo as prediction (will be corrected by server if needed)
     updateAmmoDisplay(playerAmmo - 1);
+  });
+  
+  // Add touch event handling for mobile shooting
+  document.addEventListener('touchend', (event) => {
+    // Don't trigger if touching the joystick area (left side)
+    if (event.changedTouches[0].clientX < window.innerWidth * 0.4) return;
+    
+    // Simulate a mouse click at the touch position
+    const touchX = event.changedTouches[0].clientX;
+    const touchY = event.changedTouches[0].clientY;
+    
+    // Update mouse position for aiming
+    mousePosition.x = (touchX / window.innerWidth) * 2 - 1;
+    mousePosition.y = -(touchY / window.innerHeight) * 2 + 1;
+    
+    // Calculate intersection with ground
+    updateGroundMousePosition();
+    
+    // Force update sight direction
+    mouseHasMoved = true;
+    
+    // Update player sight before shooting
+    if (localPlayer && gameActive) {
+      updatePlayerSight();
+      
+      // Trigger the same logic as in the click handler
+      if (!gameActive || !localPlayer) return;
+
+      const playerData = players[socket.id]?.data;
+      if (!playerData || playerData.state === 'dead') {
+        return; // Exit if player is dead
+      }
+      
+      if (playerAmmo <= 0 || !canFire) {
+        showAmmoWarning();
+        return;
+      }
+      
+      canFire = false;
+      
+      const direction = new THREE.Vector3()
+        .subVectors(groundMousePosition, localPlayer.position)
+        .normalize();
+      
+      socket.emit('shoot', {
+        position: {
+          x: localPlayer.position.x,
+          y: 0.5,
+          z: localPlayer.position.z
+        },
+        direction: {
+          x: direction.x,
+          y: 0,
+          z: direction.z
+        }
+      });
+      
+      updateAmmoDisplay(playerAmmo - 1);
+    }
   });
 }
 
@@ -2327,6 +2391,7 @@ function playZombieBiteSound() {
 
 // Initialize game
 function init() {
+  enableMobileStyles(); // Enable mobile-specific styles
   initThree();
   initAudio(); // Initialize audio system
   const ui = setupUI();
