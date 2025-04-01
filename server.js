@@ -642,6 +642,9 @@ setInterval(() => {
     
     // Set room ID for weaponLogic to use when emitting socket events
     room.id = roomId;
+
+    // Calculate player count
+    const playerCount = Object.keys(room.players).length;
     
     // Update projectiles using weaponLogic - pass zombieLogic and checkMapCollisions
     weaponLogic.updateProjectiles(room, io, zombieLogic, checkMapCollisions, playerLogic);
@@ -680,7 +683,8 @@ setInterval(() => {
           ),
           projectiles: room.projectiles, // Projectiles are always visible
           zombies: room.zombies.filter(zombie => zombie.visibleTo && zombie.visibleTo[playerId]),
-          ammoPickups: room.ammoPickups.filter(pickup => pickup.visibleTo && pickup.visibleTo[playerId])
+          ammoPickups: room.ammoPickups.filter(pickup => pickup.visibleTo && pickup.visibleTo[playerId]),
+          playerCount: playerCount,
         };
         
         // Send personalized state update to this player

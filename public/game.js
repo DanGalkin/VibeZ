@@ -47,6 +47,7 @@ const PLAYER_HEIGHT = 1.8;
 // Game state
 let gameActive = false;
 let playerHealth = 100;
+let lastPlayerCount = 0;
 
 // Add new global variable for mouse position
 let mousePosition = new THREE.Vector2();
@@ -1226,8 +1227,10 @@ function setupUI() {
   namePromptOverlay.id = 'name-prompt-overlay';
   namePromptOverlay.innerHTML = `
     <div class="name-prompt-container">
-      <h2>Enter Your Name</h2>
-      <input type="text" id="player-name-input" placeholder="Your Name" maxlength="15" />
+      <h2>VibeZ - deathmatch in Zpocalypse</h2>
+      <h2>1 bite = Death ☠️</h2>
+      <h2>1 bullet = Kill 🔫</h2>
+      <input type="text" id="player-name-input" placeholder="Your Name - Your GLORY!!!" maxlength="15" />
       <button id="confirm-name-btn">Play</button>
     </div>
   `;
@@ -1334,6 +1337,30 @@ function setupUI() {
   playerNameInput.addEventListener('keyup', (event) => {
     if (event.key === 'Enter') confirmPlayerName();
   });
+
+  // Create player count display element
+  const playerCountUI = document.createElement('div');
+  playerCountUI.id = 'player-count';
+  playerCountUI.className = 'player-count';
+  playerCountUI.innerHTML = `<span>Players: 1</span>`;
+  document.body.appendChild(playerCountUI);
+
+  // Add the CSS styles
+  const countStyle = document.createElement('style');
+  countStyle.textContent = `
+    .player-count {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(0, 0, 0, 0.6);
+      color: white;
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+    }
+  `;
+  document.head.appendChild(countStyle);
   
   // Function to connect to automatic game room
   function connectToAutoGame() {
@@ -2126,7 +2153,14 @@ function setupSocketEvents(ui) {
       }
     }
     
-    // ...existing code for ammo update...
+    // Update player count if available
+    if (state.playerCount !== undefined) {
+      updatePlayerCount(state.playerCount);
+      if (state.playerCount === 1 && state.playerCount !== lastPlayerCount) {
+        showGameMessage('Invite friends for a blood bath!', '#ff6347', 20000);
+      }
+      lastPlayerCount = state.playerCount;
+    }
   });
 
   // Room not found
@@ -2874,7 +2908,7 @@ function worldToScreen(position) {
 }
 
 // Show game messages (chat, notifications, etc.)
-function showGameMessage(text, color = '#ffffff') {
+function showGameMessage(text, color = '#ffffff', timeout = 5500) {
   console.log('showing message:', text);
   const messagesContainer = document.getElementById('game-messages');
   
@@ -2937,7 +2971,15 @@ function showGameMessage(text, color = '#ffffff') {
     if (messageElement.parentNode) {
       messageElement.parentNode.removeChild(messageElement);
     }
-  }, 5500);
+  }, timeout);
+}
+
+// Function to update player count
+function updatePlayerCount(count) {
+  const playerCountElement = document.getElementById('player-count');
+  if (playerCountElement) {
+    playerCountElement.innerHTML = `<span>Players: ${count}</span>`;
+  }
 }
 
 // Initialize audio system
