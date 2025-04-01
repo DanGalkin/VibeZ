@@ -2,6 +2,8 @@
 import { createMapElements } from './map.js';
 // Import zombie-related functions
 import { createZombieMesh, animateZombies, removeZombie, handleZombieHit } from './zombies.js';
+// Import mobile controls
+import { initMobileControls, enableMobileStyles, isMobileDevice } from './mobile-controls.js';
 
 // Connect to Socket.IO server
 const socket = io();
@@ -17,6 +19,7 @@ let roomId = null;
 let mapContainer = null;
 let mapBoundaries = null; // Add reference to map boundaries visualization
 let crosshair = null; // Add reference to player's crosshair
+let mobileDevice = false;
 
 // Add ammo tracking variables
 let playerAmmo = 7; // Default starting ammo
@@ -190,6 +193,7 @@ function initThree() {
   });
   
   // Add event listeners for controls
+  mobileDevice = isMobileDevice();
   setupControls();
 }
 
@@ -234,6 +238,96 @@ function createMapBoundaries() {
 
 // Set up keyboard and mouse controls
 function setupControls() {
+  // Create a shoot function that we can reuse
+  const triggerShoot = () => {
+    if (!gameActive || !localPlayer) return false;
+
+    const playerData = players[socket.id]?.data;
+    if (!playerData || playerData.state === 'dead') {
+      return false; // Exit if player is dead
+    }
+    
+    // Check ammo and fire state
+    if (playerAmmo <= 0 || !canFire) {
+      showAmmoWarning();
+      return false;
+    }
+    
+    // Set canFire to false until we get server response
+    canFire = false;
+    
+    // Calculate direction from player to target
+    const direction = new THREE.Vector3()
+      .subVectors(groundMousePosition, localPlayer.position)
+      .normalize();
+    
+    // Emit shoot event to server
+    socket.emit('shoot', {
+      position: {
+        x: localPlayer.position.x,
+        y: 0.5, // Slightly above ground
+        z: localPlayer.position.z
+      },
+      direction: {
+        x: direction.x,
+        y: 0, // Keep projectiles level with ground
+        z: direction.z
+      }
+    });
+    
+    // Decrement local ammo as prediction
+    updateAmmoDisplay(playerAmmo - 1);
+    return true;
+  };
+
+  // Initialize mobile controls - pass three callbacks: keys object, sight callback, and shoot callback
+  initMobileControls(
+    keys, 
+    // Sight callback
+    (angle, maintainCurrent) => {
+      if (localPlayer && gameActive) {
+        if (angle === null && maintainCurrent) {
+          window.joystickAimActive = false;
+          return;
+        }
+
+        window.joystickAimActive = true;
+        localPlayer.rotation.y = angle;
+        socket.emit('playerSight', { angle });
+        updateCrosshairPosition();
+        // Store the latest joystick angle for shoot buttons
+        window.lastJoystickAngle = angle;
+        mouseHasMoved = false;
+      }
+    },
+    // Shoot callback - Fixed to use the current sight direction
+    () => {
+      // Make sure we have the latest direction when shooting
+      if (!groundMousePosition || !groundMousePosition.isVector3) {
+        updateGroundMousePosition();
+      }
+      
+      // If joystick is active, adjust groundMousePosition to match joystick direction
+      if (window.joystickAimActive && window.lastJoystickAngle !== undefined) {
+        const direction = new THREE.Vector3(
+          Math.sin(window.lastJoystickAngle),
+          0,
+          Math.cos(window.lastJoystickAngle)
+        ).normalize();
+        
+        // Set groundMousePosition based on joystick direction
+        groundMousePosition.copy(localPlayer.position).add(
+          direction.multiplyScalar(10)
+        );
+        
+        // Update crosshair to match
+        updateCrosshairPosition();
+      }
+      
+      return triggerShoot();
+    }
+  );
+
   // Keyboard movement - using KeyboardEvent.code for layout independence
   document.addEventListener('keydown', (event) => {
     switch (event.code) {
@@ -287,6 +381,9 @@ function setupControls() {
   
   // Track mouse movement for sight controller
   document.addEventListener('mousemove', (event) => {
+
+    if(mobileDevice) return; // Ignore clicks on mobile devices
+
     // Update the mouse position
     mousePosition.x = (event.clientX / window.innerWidth) * 2 - 1;
     mousePosition.y = -(event.clientY / window.innerHeight) * 2 + 1;
@@ -306,6 +403,8 @@ function setupControls() {
   // Mouse click for shooting
   document.addEventListener('click', (event) => {
     if (!gameActive || !localPlayer) return;
+
+    if(mobileDevice) return; // Ignore clicks on mobile devices
 
     const playerData = players[socket.id]?.data;
     console.log('Player data:', playerData);
@@ -351,6 +450,76 @@ function setupControls() {
     // Decrement local ammo as prediction (will be corrected by server if needed)
     updateAmmoDisplay(playerAmmo - 1);
   });
+  
+  // Add touch event handling for mobile shooting
+  // HIDE FOR NOW: interfering with fire buttons
+  // document.addEventListener('touchend', (event) => {
+  //   // Get the touch position
+  //   const touchX = event.changedTouches[0].clientX;
+  //   const touchY = event.changedTouches[0].clientY;
+    
+  //   // Get the window dimensions
+  //   const windowWidth = window.innerWidth;
+  //   const windowHeight = window.innerHeight;
+    
+  //   // Don't trigger shooting if touching in joystick areas (left/right edges of screen)
+  //   const joystickSize = 150; // Slightly larger than the actual joystick to ensure we catch the entire interaction area
+  //   const isLeftJoystickArea = touchX < joystickSize && touchY > windowHeight - joystickSize * 1.5;
+  //   const isRightJoystickArea = touchX > windowWidth - joystickSize && touchY > windowHeight - joystickSize * 1.5;
+    
+  //   if (isLeftJoystickArea || isRightJoystickArea) {
+  //     return; // Don't shoot when touching joysticks
+  //   }
+    
+  //   // Update mouse position for aiming
+  //   mousePosition.x = (touchX / windowWidth) * 2 - 1;
+  //   mousePosition.y = -(touchY / windowHeight) * 2 + 1;
+    
+  //   // Calculate intersection with ground
+  //   updateGroundMousePosition();
+    
+  //   // Force update sight direction
+  //   mouseHasMoved = true;
+    
+  //   // Update player sight before shooting
+  //   if (localPlayer && gameActive) {
+  //     updatePlayerSight();
+      
+  //     // Trigger the same logic as in the click handler
+  //     if (!gameActive || !localPlayer) return;
+
+  //     const playerData = players[socket.id]?.data;
+  //     if (!playerData || playerData.state === 'dead') {
+  //       return; // Exit if player is dead
+  //     }
+      
+  //     if (playerAmmo <= 0 || !canFire) {
+  //       showAmmoWarning();
+  //       return;
+  //     }
+      
+  //     canFire = false;
+      
+  //     const direction = new THREE.Vector3()
+  //       .subVectors(groundMousePosition, localPlayer.position)
+  //       .normalize();
+      
+  //     socket.emit('shoot', {
+  //       position: {
+  //         x: localPlayer.position.x,
+  //         y: 0.5,
+  //         z: localPlayer.position.z
+  //       },
+  //       direction: {
+  //         x: direction.x,
+  //         y: 0,
+  //         z: direction.z
+  //       }
+  //     });
+      
+  //     updateAmmoDisplay(playerAmmo - 1);
+  //   }
+  // });
 }
 
 // Show a visual warning when player is out of ammo
@@ -406,6 +575,11 @@ function updateGroundMousePosition() {
 
 // Update player sight direction based on mouse position
 function updatePlayerSight() {
+  // Prevent mouse control if joystick is active
+  if (window.joystickAimActive === true) {
+    return; // Joystick is actively controlling aim, don't override with mouse
+  }
+
   if (!localPlayer || !groundMousePosition) return;
   
   // If the mouse hasn't moved, don't change the sight direction
