@@ -6,6 +6,6 @@
     "uuid": "^11.1.0"
   },
   "scripts": {
-    "build": "node server.js"
+    "start": "node server.js"
   }
 }
