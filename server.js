@@ -605,8 +605,8 @@ io.on('connection', (socket) => {
       // Remove player from room state
       delete rooms[socket.roomId].players[socket.id];
       
-      // Notify other players about the disconnected player
-      socket.to(socket.roomId).emit('playerLeft', socket.id);
+      // Doubling event handler already notifying the clients
+      // socket.to(socket.roomId).emit('playerLeft', socket.id);
       
       // Clean up empty rooms
       if (Object.keys(rooms[socket.roomId].players).length === 0) {
@@ -817,6 +817,7 @@ io.on('connection', (socket) => {
   // Handle disconnection - include player name in the left notification
   socket.on('disconnect', () => {
     const roomId = socket.roomId;
+    console.log('User disconnected (another disconnection):', socket.id);
     if (roomId && rooms[roomId]) {
       // Send playerId and name if available
       socket.to(roomId).emit('playerLeft', {
