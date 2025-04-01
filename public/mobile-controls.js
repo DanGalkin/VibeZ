@@ -207,7 +207,7 @@ function setupJoysticks(keys, updateSightCallback) {
   });
   
   // Show mobile controls instructions
-  showMobileInstructions();
+  //showMobileInstructions(); // innecessary for now
 }
 
 // Create shoot buttons below each joystick
@@ -422,7 +422,7 @@ function addMobileStyles() {
       /* Shoot button styles */
       #left-shoot-button:active, #right-shoot-button:active {
         transform: scale(0.9);
-        background-color: rgba(255, 100, 100, 0.9) !important;
+        background-color: rgba(255, 100, 100, 0.3) !important;
       }
     }
   `;
