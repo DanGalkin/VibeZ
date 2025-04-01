@@ -6,9 +6,11 @@ let leftJoystick = null;
 let rightJoystick = null;
 let leftJoystickContainer = null;
 let rightJoystickContainer = null;
+let leftShootButton = null;
+let rightShootButton = null;
 
 // Function to detect if the device is mobile
-function isMobileDevice() {
+export function isMobileDevice() {
   return (
     ('ontouchstart' in window || navigator.maxTouchPoints > 0) &&
     (window.innerWidth <= 1024 || ('orientation' in window))
@@ -16,7 +18,7 @@ function isMobileDevice() {
 }
 
 // Initialize mobile controls if needed
-export function initMobileControls(keys, updateSightCallback) {
+export function initMobileControls(keys, updateSightCallback, shootCallback) {
   // Only initialize on mobile devices
   if (!isMobileDevice()) return;
   
@@ -24,6 +26,9 @@ export function initMobileControls(keys, updateSightCallback) {
   loadNippleJS().then(() => {
     createJoystickContainers();
     setupJoysticks(keys, updateSightCallback);
+    if (typeof shootCallback === 'function') {
+      createShootButtons(shootCallback);
+    }
   }).catch(err => {
     console.error('Failed to load nippleJS:', err);
   });
@@ -33,11 +38,16 @@ export function initMobileControls(keys, updateSightCallback) {
     if (isMobileDevice()) {
       if (!leftJoystickContainer || !rightJoystickContainer) {
         destroyJoysticks();
+        destroyShootButtons();
         createJoystickContainers();
         setupJoysticks(keys, updateSightCallback);
+        if (typeof shootCallback === 'function') {
+          createShootButtons(shootCallback);
+        }
       }
     } else {
       destroyJoysticks();
+      destroyShootButtons();
     }
   });
 }
@@ -200,6 +210,98 @@ function setupJoysticks(keys, updateSightCallback) {
   showMobileInstructions();
 }
 
+// Create shoot buttons below each joystick
+function createShootButtons(shootCallback) {
+  // Create left shoot button
+  leftShootButton = document.createElement('div');
+  leftShootButton.id = 'left-shoot-button';
+  leftShootButton.innerText = '🔫';
+  
+  leftShootButton.style.cssText = `
+    position: fixed;
+    bottom: 30px;
+    left: 100px;
+    width: 60px;
+    height: 60px;
+    background-color: rgba(255, 50, 50, 0.7);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    user-select: none;
+    touch-action: manipulation;
+    cursor: pointer;
+    z-index: 2001;
+  `;
+  
+  // Create right shoot button
+  rightShootButton = document.createElement('div');
+  rightShootButton.id = 'right-shoot-button';
+  rightShootButton.innerText = '🔫';
+  
+  rightShootButton.style.cssText = `
+    position: fixed;
+    bottom: 30px;
+    right: 100px;
+    width: 60px;
+    height: 60px;
+    background-color: rgba(255, 50, 50, 0.7);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    user-select: none;
+    touch-action: manipulation;
+    cursor: pointer;
+    z-index: 2001;
+  `;
+  
+  // Add to document
+  document.body.appendChild(leftShootButton);
+  document.body.appendChild(rightShootButton);
+  
+  // Add event listeners for both buttons
+  const addShootListener = (button) => {
+    ['touchstart', 'mousedown'].forEach(eventType => {
+      button.addEventListener(eventType, (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        // Visual feedback
+        button.style.transform = 'scale(0.9)';
+        setTimeout(() => {
+          button.style.transform = 'scale(1)';
+        }, 100);
+        
+        // Trigger shoot callback
+        shootCallback();
+      });
+    });
+  };
+  
+  addShootListener(leftShootButton);
+  addShootListener(rightShootButton);
+}
+
+// Clean up shoot buttons when not needed
+function destroyShootButtons() {
+  if (leftShootButton && leftShootButton.parentNode) {
+    leftShootButton.parentNode.removeChild(leftShootButton);
+    leftShootButton = null;
+  }
+  
+  if (rightShootButton && rightShootButton.parentNode) {
+    rightShootButton.parentNode.removeChild(rightShootButton);
+    rightShootButton = null;
+  }
+}
+
 // Clean up joysticks
 function destroyJoysticks() {
   if (leftJoystick) {
@@ -234,7 +336,7 @@ function showMobileInstructions() {
     <h3>Mobile Controls</h3>
     <p>Use the LEFT joystick to move</p>
     <p>Use the RIGHT joystick to aim</p>
-    <p>Tap anywhere else to shoot</p>
+    <p>Tap the SHOOT buttons or anywhere else to shoot</p>
   `;
   
   // Style the instructions
@@ -315,6 +417,12 @@ function addMobileStyles() {
       #right-joystick-container .nipple .back {
         background-color: rgba(255, 50, 50, 0.3) !important;
         border: 1px solid rgba(255, 50, 50, 0.5) !important;
+      }
+      
+      /* Shoot button styles */
+      #left-shoot-button:active, #right-shoot-button:active {
+        transform: scale(0.9);
+        background-color: rgba(255, 100, 100, 0.9) !important;
       }
     }
   `;
