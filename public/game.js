@@ -309,7 +309,7 @@ function setupControls() {
       }
       
       // If joystick is active, adjust groundMousePosition to match joystick direction
-      if (window.joystickAimActive && window.lastJoystickAngle !== undefined) {
+      if (window.lastJoystickAngle !== undefined) {
         const direction = new THREE.Vector3(
           Math.sin(window.lastJoystickAngle),
           0,
