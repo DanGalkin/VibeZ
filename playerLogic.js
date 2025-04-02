@@ -83,7 +83,9 @@ function createPlayer(socketId, mapSize = 50) {
     speed: PLAYER_SPEED,
     lastUpdateTime: Date.now(),
     weapon: 'pistol', // Default weapon
-    ammo: DEFAULT_AMMO_AMOUNT // Default ammo count for pistol
+    ammo: DEFAULT_AMMO_AMOUNT, // Default ammo count for pistol
+    isInvulnerable: true, // Start as invulnerable
+    invulnerabilityEndTime: Date.now() + 2000 // 2 seconds from now
   };
 }
 
@@ -161,6 +163,17 @@ function handlePlayerMovement(player, movement, checkMapCollisions, map, isWithi
  * @returns {boolean} - Returns true if player died
  */
 function handlePlayerHit(player, room, io, damage = 10, sourceType = null, sourceId = null) {
+  // Check if player is currently invulnerable
+  if (player.isInvulnerable && player.invulnerabilityEndTime > Date.now()) {
+    // Emit event for invulnerable hit (for client feedback without damage)
+    io.to(room.id).emit('playerInvulnerableHit', {
+      playerId: player.id,
+      sourceType,
+      sourceId
+    });
+    return false; // No damage dealt
+  }
+
   player.health -= damage;
   const isDead = player.health <= 0;
 
@@ -207,18 +220,36 @@ function schedulePlayerRespawn(player, room, io, delay = 5000) {
     player.state = 'alive';
     player.position = generateEdgeSpawnPosition(room.mapSize);
     player.ammo = DEFAULT_AMMO_AMOUNT; // Reset ammo to default value
+    
+    // Set player as invulnerable for 2 seconds
+    player.isInvulnerable = true;
+    player.invulnerabilityEndTime = Date.now() + 2000;
 
     io.to(player.id).emit('playerRespawn', {
       health: player.health,
       position: player.position,
       ammo: player.ammo,
       state: player.state,
+      isInvulnerable: true
     });
 
     io.to(room.id).emit('playerRespawned', {
       playerId: player.id,
-      position: player.position
+      position: player.position,
+      isInvulnerable: true
     });
+    
+    // Schedule the end of invulnerability period
+    setTimeout(() => {
+      if (room && room.players[player.id]) {
+        room.players[player.id].isInvulnerable = false;
+        
+        // Notify client that invulnerability has ended
+        io.to(room.id).emit('playerInvulnerabilityEnded', {
+          playerId: player.id
+        });
+      }
+    }, 2000);
   }, delay);
 }
 

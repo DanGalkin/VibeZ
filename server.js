@@ -910,13 +910,26 @@ function joinRoom(socket, roomId) {
     rotation: player.rotation || 0,
     color: playerColor,
     health: player.health || 100,
-    name: playerName
+    name: playerName,
+    isInvulnerable: true
   });
   
   console.log(`Player ${socket.id} (${playerName}) joined room ${roomId}`);
   
   // Broadcast updated room list to all clients
   io.emit('roomsUpdated');
+  
+  // Schedule end of invulnerability period
+  setTimeout(() => {
+    if (rooms[roomId] && rooms[roomId].players[socket.id]) {
+      rooms[roomId].players[socket.id].isInvulnerable = false;
+      
+      // Notify clients that invulnerability has ended
+      io.to(roomId).emit('playerInvulnerabilityEnded', {
+        playerId: socket.id
+      });
+    }
+  }, 2000);
 }
 
 // Function to get a random spawn point for a player
